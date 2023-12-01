@@ -20,7 +20,7 @@ impl NativeEncodedVideoFrameStream {
     pub fn new(rtp_receiver: &RtpReceiver) -> Self {
         let (frame_tx, frame_rx) = mpsc::unbounded_channel();
         let mut observer = Box::new(VideoTrackEncodedVideoFramesObserver { frame_tx });
-        let mut native_transfomer = unsafe {
+        let native_transfomer = unsafe {
             sys_ft::ffi::new_adapted_frame_transformer(Box::new(sys_ft::EncodedFrameSinkWrapper::new(
                 &mut *observer
             )), true)
@@ -74,7 +74,7 @@ impl sys_ft::EncodedFrameSink for VideoTrackEncodedVideoFramesObserver {
         let _ = self.frame_tx.send(encoded_frame);
     }
 
-    fn on_encoded_audio_frame(&self, frame: UniquePtr<sys_eaf>) {
+    fn on_encoded_audio_frame(&self, _frame: UniquePtr<sys_eaf>) {
         panic!("Receiving audio frames in a video receiver");
     }
 }

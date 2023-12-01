@@ -1,6 +1,5 @@
 use cxx::UniquePtr;
 use webrtc_sys::sender_report::ffi::SenderReport as sys_sr;
-use std::slice;
 
 pub struct SenderReport {
     pub(crate) sender_report: UniquePtr<sys_sr>,

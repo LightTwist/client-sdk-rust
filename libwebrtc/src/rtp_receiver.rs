@@ -61,7 +61,7 @@ impl RtpReceiver {
     }
 
     pub fn new_adapted_sender_report_callback(&self, observer: Box<SenderReportSinkWrapper>) -> Option<SharedPtr<AdaptedNativeSenderReportCallback>> {
-        if let Some(track) = &self.handle.track() {
+        if let Some(_track) = &self.handle.track() {
             return Some(self.handle.new_adapted_sender_report_callback(observer));
         }
         None

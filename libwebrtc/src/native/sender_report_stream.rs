@@ -9,7 +9,7 @@ use std::pin::Pin;
 use std::task::{Context, Poll};
 
 pub struct NativeSenderReportStream {
-    native_callback: SharedPtr<sys_ft::ffi::AdaptedNativeSenderReportCallback>,
+    _native_callback: SharedPtr<sys_ft::ffi::AdaptedNativeSenderReportCallback>,
     _observer: Box<SenderReportsObserver>,
     sr_rx: mpsc::UnboundedReceiver<SenderReport>,
 }
@@ -18,7 +18,7 @@ impl NativeSenderReportStream {
     pub fn new(rtp_receiver: &RtpReceiver) -> Self {
         let (sr_tx, sr_rx) = mpsc::unbounded_channel();
         let mut observer = Box::new(SenderReportsObserver { sr_tx });
-        let mut native_callback = unsafe {
+        let native_callback = unsafe {
             sys_ft::ffi::new_adapted_sender_report_callback(Box::new(sys_ft::SenderReportSinkWrapper::new(
                 &mut *observer
             )))
@@ -27,7 +27,7 @@ impl NativeSenderReportStream {
         rtp_receiver.set_sender_report_callback(native_callback.clone());
 
         Self {
-            native_callback: native_callback,
+            _native_callback: native_callback,
             _observer: observer,
             sr_rx
         }

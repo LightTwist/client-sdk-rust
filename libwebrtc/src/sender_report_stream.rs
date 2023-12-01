@@ -9,11 +9,9 @@ pub mod native {
     use crate::prelude::RtpReceiver;
     use super::stream_imp;
     use futures::stream::Stream;
-    use webrtc_sys::sender_report::ffi::SenderReport as sys_sr;
     use std::fmt::Debug;
     use std::pin::Pin;
     use std::task::{Context, Poll};
-    use cxx::UniquePtr;
 
     pub struct NativeSenderReportStream {
         pub(crate) handle: stream_imp::NativeSenderReportStream,

@@ -136,7 +136,7 @@ struct EngineHandle {
 
 struct EngineInner {
     // Keep a strong reference to LkRuntime to avoid creating a new RtcRuntime or PeerConnection factory accross multiple Rtc sessions
-    lk_runtime: Arc<LkRuntime>,
+    _lk_runtime: Arc<LkRuntime>,
     engine_tx: EngineEmitter,
     options: EngineOptions,
 
@@ -265,7 +265,7 @@ impl EngineInner {
         session.wait_pc_connection().await?;
 
         let inner = Arc::new(Self {
-            lk_runtime,
+            _lk_runtime: lk_runtime,
             engine_tx,
             close_notifier: Arc::new(Notify::new()),
             running_handle: RwLock::new(EngineHandle {

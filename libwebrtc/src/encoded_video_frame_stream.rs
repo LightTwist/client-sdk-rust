@@ -9,11 +9,9 @@ pub mod native {
     use crate::prelude::RtpReceiver;
     use super::stream_imp;
     use futures::stream::Stream;
-    use webrtc_sys::encoded_video_frame::ffi::EncodedVideoFrame as sys_ef;
     use std::fmt::Debug;
     use std::pin::Pin;
     use std::task::{Context, Poll};
-    use cxx::UniquePtr;
 
     pub struct NativeEncodedVideoFrameStream {
         pub(crate) handle: stream_imp::NativeEncodedVideoFrameStream,
