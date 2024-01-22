@@ -4,6 +4,7 @@
 #include "api/frame_transformer_interface.h"
 #include "rtc_base/checks.h"
 #include "rtc_base/ref_counted_object.h"
+#include "rtc_base/synchronization/mutex.h"
 #include "rust/cxx.h"
 #include <memory>
 #include <vector>
@@ -41,9 +42,9 @@ class NativeFrameTransformer : public rtc::RefCountedObject<webrtc::FrameTransfo
   bool is_video;
   rust::Box<EncodedFrameSinkWrapper> observer_;
   
-  mutable std::mutex sink_mutex_;
+  mutable webrtc::Mutex sink_mutex_;
   rtc::scoped_refptr<webrtc::TransformedFrameCallback> sink_callback_;
-  std::map<uint32_t, rtc::scoped_refptr<webrtc::TransformedFrameCallback>> sink_callbacks_;
+  std::unordered_map<uint32_t, rtc::scoped_refptr<webrtc::TransformedFrameCallback>> sink_callbacks_;
 };
 
 // from AdaptedVideoTrackSource

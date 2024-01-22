@@ -22,13 +22,13 @@ void NativeFrameTransformer::Transform(std::unique_ptr<webrtc::TransformableFram
 
 void NativeFrameTransformer::RegisterTransformedFrameCallback(rtc::scoped_refptr<webrtc::TransformedFrameCallback> send_frame_to_sink_callback) {
     fprintf(stderr, "NativeFrameTransformer::RegisterTransformedFrameCallback\n");
-    std::lock_guard<std::mutex> guard(sink_mutex_);
+    webrtc::MutexLock lock(&sink_mutex_);
     sink_callback_ = send_frame_to_sink_callback;
 }
 
 void NativeFrameTransformer::UnregisterTransformedFrameCallback() {
     fprintf(stderr, "NativeFrameTransformer::UnregisterTransformedFrameCallback\n");
-    std::lock_guard<std::mutex> guard(sink_mutex_);
+    webrtc::MutexLock lock(&sink_mutex_);
     sink_callback_ = nullptr;
 }
 
@@ -41,18 +41,17 @@ void NativeFrameTransformer::RegisterTransformedFrameSinkCallback(
         fprintf(stderr, "callback is nullptr\n");
     }
     
-    std::lock_guard<std::mutex> guard(sink_mutex_);
-    sink_callbacks_[ssrc] = send_frame_to_sink_callback;
+    // webrtc::TransformedFrameCallback* rawPtr = send_frame_to_sink_callback.get();
+    // fprintf(stderr, "Address of the object being registered: %p\n", static_cast<void*>(rawPtr));
 
-    // TODO: for some reason, getting the callback from the map is causing a crash
-    // so for now we are falling back to writing to the property
-    sink_callback_ = send_frame_to_sink_callback;
+    webrtc::MutexLock lock(&sink_mutex_);
+    sink_callbacks_[ssrc] = send_frame_to_sink_callback;
 }
 
 void NativeFrameTransformer::UnregisterTransformedFrameSinkCallback(uint32_t ssrc) {
-    fprintf(stderr, "NativeFrameTransformer::UnregisterTransformedFrameSinkCallback\n");
+    fprintf(stderr, "NativeFrameTransformer::UnregisterTransformedFrameSinkCallback for ssrc %" PRIu32 "\n", ssrc);
 
-    std::lock_guard<std::mutex> guard(sink_mutex_);
+    webrtc::MutexLock lock(&sink_mutex_);
     auto it = sink_callbacks_.find(ssrc);
     if (it != sink_callbacks_.end()) {
       sink_callbacks_.erase(it);
@@ -64,29 +63,24 @@ void NativeFrameTransformer::FrameTransformed(std::unique_ptr<webrtc::Transforma
 
     rtc::scoped_refptr<webrtc::TransformedFrameCallback> sink_callback = nullptr;
     {
-        std::lock_guard<std::mutex> guard(sink_mutex_);
+        webrtc::MutexLock lock(&sink_mutex_);
 
-        // TODO: for some reason, getting the callback from the map is causing a crash
+        uint32_t ssrc = frame->GetSsrc();
 
-        // uint32_t ssrc = frame->GetSsrc();
+        //fprintf(stderr, "getting sink callback for ssrc %" PRIu32 "\n", ssrc);
 
-        // fprintf(stderr, "getting sink callback for ssrc %" PRIu32 "\n", ssrc);
-
-        // auto it = sink_callbacks_.find(ssrc);
-        // if (it != sink_callbacks_.end()) {
-        //     sink_callback = sink_callbacks_[ssrc];
-        // }
-        // else {
-        //     fprintf(stderr, "not found, defaulting\n");
-        // }
-        
-        if (sink_callback == nullptr) {
-            sink_callback = sink_callback_;
+        auto it = sink_callbacks_.find(ssrc);
+        if (it != sink_callbacks_.end()) {
+            //fprintf(stderr, "found! callback for ssrc %" PRIu32 "\n", ssrc);
+            sink_callback = sink_callbacks_[ssrc];
+        }
+        else {
+            fprintf(stderr, "callback for ssrc %" PRIu32 " not found\n");
         }
     }
 
     if (sink_callback != nullptr) {
-        sink_callback_->OnTransformedFrame(std::move(frame));
+        sink_callback->OnTransformedFrame(std::move(frame));
     }
     else {
         fprintf(stderr, "did not find callback: %x\n");
@@ -146,7 +140,7 @@ rtc::scoped_refptr<NativeSenderReportCallback> AdaptedNativeSenderReportCallback
 std::shared_ptr<AdaptedNativeSenderReportCallback> new_adapted_sender_report_callback(
     rust::Box<SenderReportSinkWrapper> observer
     ) {
-    fprintf(stderr, "new_adapted_sender_report_callback()\n");
+    //fprintf(stderr, "new_adapted_sender_report_callback()\n");
     
     return std::make_shared<AdaptedNativeSenderReportCallback>(
         rtc::scoped_refptr<NativeSenderReportCallback>(new NativeSenderReportCallback(std::move(observer)))

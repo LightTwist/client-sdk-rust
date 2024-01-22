@@ -18,6 +18,7 @@ use crate::rtp_parameters::RtpCapabilities;
 use crate::MediaType;
 use crate::RtcError;
 use std::fmt::Debug;
+use log::info;
 
 #[derive(Debug, Clone)]
 pub struct IceServer {
@@ -72,6 +73,7 @@ impl PeerConnectionFactory {
         &self,
         config: RtcConfiguration,
     ) -> Result<PeerConnection, RtcError> {
+        eprintln!("LightTwist client-sdk-rust v1.0.1");
         self.handle.create_peer_connection(config)
     }
 
