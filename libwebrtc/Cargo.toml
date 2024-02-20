@@ -6,6 +6,7 @@ homepage = "https://livekit.io"
 license = "Apache-2.0"
 description = "Livekit safe bindings to libwebrtc"
 repository = "https://github.com/livekit/client-sdk-rust"
+build = "build.rs"
 
 [dependencies]
 livekit-protocol = { path = "../livekit-protocol", version = "0.2.0" }
@@ -14,6 +15,7 @@ thiserror = "1.0"
 futures = "0.3.28"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 futures-channel = "0.3"
+uuid = { version="1.2.1", features = ["v4"]}
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
@@ -48,3 +50,7 @@ web-sys = { version = "0.3", features = [
 
 [dev-dependencies]
 env_logger = "0.10"
+
+[build-dependencies]
+uuid = { version="1.2.1", features = ["v4"]}
+chrono = "0.4.24"

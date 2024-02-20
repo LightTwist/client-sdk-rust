@@ -18,6 +18,7 @@ use crate::rtp_parameters::RtpCapabilities;
 use crate::MediaType;
 use crate::RtcError;
 use std::fmt::Debug;
+use std::env;
 use log::info;
 
 #[derive(Debug, Clone)]
@@ -73,7 +74,10 @@ impl PeerConnectionFactory {
         &self,
         config: RtcConfiguration,
     ) -> Result<PeerConnection, RtcError> {
-        eprintln!("LightTwist client-sdk-rust v1.0.1");
+        let build_uuid = env!("LT_BUILD_UUID");
+        eprintln!("===========================================================================");
+        eprintln!("LightTwist client-sdk-rust build {}", build_uuid);
+        eprintln!("===========================================================================");
         self.handle.create_peer_connection(config)
     }
 
