@@ -19,5 +19,10 @@ int64_t SenderReport::ntp_time_ms() const {
     return sender_report_->sender_report_.ntp().ToMs();
 }
 
+uint64_t SenderReport::ntp_time() const {
+    uint64_t ntp = static_cast<uint64_t>(sender_report_->sender_report_.ntp());
+    return ntp;
+}
+
 }
 

@@ -13,6 +13,7 @@ pub mod ffi {
         fn ssrc(self: &SenderReport) -> u32;        
         fn rtp_timestamp(self: &SenderReport) -> u32;
         fn ntp_time_ms(self: &SenderReport) -> i64;
+        fn ntp_time(self: &SenderReport) -> u64;
     }
 
     impl UniquePtr<SenderReport> {}

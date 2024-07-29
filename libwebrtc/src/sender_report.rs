@@ -23,4 +23,8 @@ impl SenderReport {
     pub fn ntp_time_ms(&self) -> i64 {
         self.sender_report.ntp_time_ms()
     }
+
+    pub fn ntp_time(&self) -> u64 {
+        self.sender_report.ntp_time()
+    }
 }

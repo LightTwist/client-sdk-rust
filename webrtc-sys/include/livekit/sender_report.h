@@ -19,6 +19,7 @@ class SenderReport {
   uint32_t ssrc() const;
   uint32_t rtp_timestamp() const;
   int64_t ntp_time_ms() const;
+  uint64_t ntp_time() const;
 
  private:
   std::unique_ptr<webrtc::LTSenderReport> sender_report_;
