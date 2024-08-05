@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use std::env;
-use std::path;
-use std::process::Command;
+use std::path::Path;
+use std::path::PathBuf;
+use std::{env, path, process::Command};
 
 fn main() {
     if env::var("DOCS_RS").is_ok() {
@@ -101,10 +101,7 @@ fn main() {
         webrtc_include.join("sdk/objc/base"),
     ]);
 
-    println!(
-        "cargo:rustc-link-search=native={}",
-        webrtc_lib.to_str().unwrap()
-    );
+    println!("cargo:rustc-link-search=native={}", webrtc_lib.to_str().unwrap());
 
     for (key, value) in webrtc_sys_build::webrtc_defines() {
         let value = value.as_deref();
@@ -158,6 +155,7 @@ fn main() {
             println!("cargo:rustc-link-lib=framework=CoreVideo");
             println!("cargo:rustc-link-lib=framework=OpenGL");
             println!("cargo:rustc-link-lib=framework=Metal");
+            println!("cargo:rustc-link-lib=framework=MetalKit");
             println!("cargo:rustc-link-lib=framework=QuartzCore");
             println!("cargo:rustc-link-lib=framework=IOKit");
             println!("cargo:rustc-link-lib=framework=IOSurface");
@@ -166,6 +164,7 @@ fn main() {
 
             builder
                 .file("src/objc_video_factory.mm")
+                .file("src/objc_video_frame_buffer.mm")
                 .flag("-stdlib=libc++")
                 .flag("-std=c++20");
         }
@@ -182,12 +181,16 @@ fn main() {
             println!("cargo:rustc-link-lib=framework=OpenGLES");
             println!("cargo:rustc-link-lib=framework=GLKit");
             println!("cargo:rustc-link-lib=framework=Metal");
+            println!("cargo:rustc-link-lib=framework=MetalKit");
             println!("cargo:rustc-link-lib=framework=Network");
             println!("cargo:rustc-link-lib=framework=QuartzCore");
 
             configure_darwin_sysroot(&mut builder);
 
-            builder.file("src/objc_video_factory.mm").flag("-std=c++20");
+            builder
+                .file("src/objc_video_factory.mm")
+                .file("src/objc_video_frame_buffer.mm")
+                .flag("-std=c++20");
         }
         "android" => {
             webrtc_sys_build::configure_jni_symbols().unwrap();
@@ -198,10 +201,7 @@ fn main() {
 
             configure_android_sysroot(&mut builder);
 
-            builder
-                .file("src/android.cpp")
-                .flag("-std=c++20")
-                .cpp_link_stdlib("c++_static");
+            builder.file("src/android.cpp").flag("-std=c++20").cpp_link_stdlib("c++_static");
         }
         _ => {
             panic!("Unsupported target, {}", target_os);
@@ -223,6 +223,29 @@ fn main() {
     for entry in glob::glob("./include/**/*.h").unwrap() {
         println!("cargo:rerun-if-changed={}", entry.unwrap().display());
     }
+
+    if target_os.as_str() == "android" {
+        copy_libwebrtc_jar(&PathBuf::from(Path::new(&webrtc_dir)));
+    }
+}
+
+fn copy_libwebrtc_jar(webrtc_dir: &PathBuf) {
+    let jar_path = webrtc_dir.join("libwebrtc.jar");
+    let output_path = get_output_path();
+    let output_jar_path = output_path.join("libwebrtc.jar");
+    let res = std::fs::copy(jar_path, output_jar_path);
+    if let Err(e) = res {
+        println!("Failed to copy libwebrtc.jar: {}", e);
+    }
+}
+
+fn get_output_path() -> PathBuf {
+    let manifest_dir_string = env::var("CARGO_MANIFEST_DIR").unwrap();
+    let build_type = env::var("PROFILE").unwrap();
+    let build_target = env::var("TARGET").unwrap();
+    let path =
+        Path::new(&manifest_dir_string).join("../target").join(build_target).join(build_type);
+    return PathBuf::from(path);
 }
 
 fn configure_darwin_sysroot(builder: &mut cc::Build) {
@@ -245,18 +268,12 @@ fn configure_darwin_sysroot(builder: &mut cc::Build) {
     println!("cargo:rustc-link-lib={}", clang_rt);
     println!("cargo:rustc-link-arg=-ObjC");
 
-    let sysroot = Command::new("xcrun")
-        .args(["--sdk", sdk, "--show-sdk-path"])
-        .output()
-        .unwrap();
+    let sysroot = Command::new("xcrun").args(["--sdk", sdk, "--show-sdk-path"]).output().unwrap();
 
     let sysroot = String::from_utf8_lossy(&sysroot.stdout);
     let sysroot = sysroot.trim();
 
-    let search_dirs = Command::new("clang")
-        .arg("--print-search-dirs")
-        .output()
-        .unwrap();
+    let search_dirs = Command::new("clang").arg("--print-search-dirs").output().unwrap();
 
     let search_dirs = String::from_utf8_lossy(&search_dirs.stdout);
     for line in search_dirs.lines() {

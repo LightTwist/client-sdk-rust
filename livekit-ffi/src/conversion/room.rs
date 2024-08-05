@@ -12,16 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::proto;
-use crate::server::room::FfiRoom;
-use livekit::e2ee::key_provider::{KeyProvider, KeyProviderOptions};
-use livekit::e2ee::{E2eeOptions, EncryptionType};
-use livekit::options::{AudioEncoding, TrackPublishOptions, VideoEncoding};
-use livekit::prelude::*;
-use livekit::webrtc::native::frame_cryptor::EncryptionState;
-use livekit::webrtc::prelude::{
-    ContinualGatheringPolicy, IceServer, IceTransportsType, RtcConfiguration,
+use livekit::{
+    e2ee::{
+        key_provider::{KeyProvider, KeyProviderOptions},
+        E2eeOptions, EncryptionType,
+    },
+    options::{AudioEncoding, TrackPublishOptions, VideoEncoding},
+    prelude::*,
+    webrtc::{
+        native::frame_cryptor::EncryptionState,
+        prelude::{ContinualGatheringPolicy, IceServer, IceTransportsType, RtcConfiguration},
+    },
 };
+
+use crate::{proto, server::room::FfiRoom};
 
 impl From<EncryptionState> for proto::EncryptionState {
     fn from(value: EncryptionState) -> Self {
@@ -43,6 +47,7 @@ impl From<ConnectionQuality> for proto::ConnectionQuality {
             ConnectionQuality::Excellent => Self::QualityExcellent,
             ConnectionQuality::Good => Self::QualityGood,
             ConnectionQuality::Poor => Self::QualityPoor,
+            ConnectionQuality::Lost => Self::QualityLost,
         }
     }
 }
@@ -108,11 +113,7 @@ impl From<proto::ContinualGatheringPolicy> for ContinualGatheringPolicy {
 
 impl From<proto::IceServer> for IceServer {
     fn from(value: proto::IceServer) -> Self {
-        Self {
-            urls: value.urls,
-            username: value.username,
-            password: value.password,
-        }
+        Self { urls: value.urls, username: value.username, password: value.password }
     }
 }
 
@@ -121,11 +122,9 @@ impl From<proto::RtcConfig> for RtcConfiguration {
         let default = RoomOptions::default().rtc_config; // Always use RoomOptions as the default reference
 
         Self {
-            ice_transport_type: value
-                .ice_transport_type
-                .map_or(default.ice_transport_type, |x| {
-                    proto::IceTransportType::try_from(x).unwrap().into()
-                }),
+            ice_transport_type: value.ice_transport_type.map_or(default.ice_transport_type, |x| {
+                proto::IceTransportType::try_from(x).unwrap().into()
+            }),
             continual_gathering_policy: value
                 .continual_gathering_policy
                 .map_or(default.continual_gathering_policy, |x| {
@@ -155,10 +154,8 @@ impl From<proto::RoomOptions> for RoomOptions {
             })
         });
 
-        let rtc_config = value
-            .rtc_config
-            .map(Into::into)
-            .unwrap_or(RoomOptions::default().rtc_config);
+        let rtc_config =
+            value.rtc_config.map(Into::into).unwrap_or(RoomOptions::default().rtc_config);
 
         Self {
             adaptive_stream: value.adaptive_stream,
@@ -166,6 +163,7 @@ impl From<proto::RoomOptions> for RoomOptions {
             dynacast: value.dynacast,
             e2ee,
             rtc_config,
+            join_retries: value.join_retries,
         }
     }
 }
@@ -204,18 +202,13 @@ impl From<proto::TrackPublishOptions> for TrackPublishOptions {
 
 impl From<proto::VideoEncoding> for VideoEncoding {
     fn from(opts: proto::VideoEncoding) -> Self {
-        Self {
-            max_bitrate: opts.max_bitrate,
-            max_framerate: opts.max_framerate,
-        }
+        Self { max_bitrate: opts.max_bitrate, max_framerate: opts.max_framerate }
     }
 }
 
 impl From<proto::AudioEncoding> for AudioEncoding {
     fn from(opts: proto::AudioEncoding) -> Self {
-        Self {
-            max_bitrate: opts.max_bitrate,
-        }
+        Self { max_bitrate: opts.max_bitrate }
     }
 }
 
@@ -223,7 +216,7 @@ impl From<&FfiRoom> for proto::RoomInfo {
     fn from(value: &FfiRoom) -> Self {
         let room = &value.inner.room;
         Self {
-            sid: room.sid().into(),
+            sid: room.maybe_sid().map(|x| x.to_string()),
             name: room.name(),
             metadata: room.metadata(),
         }

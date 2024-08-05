@@ -12,9 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{imp::data_channel as dc_imp, rtp_parameters::Priority};
 use std::{fmt::Debug, str::Utf8Error};
+
+use serde::Deserialize;
 use thiserror::Error;
+
+use crate::{imp::data_channel as dc_imp, rtp_parameters::Priority};
 
 #[derive(Clone, Debug)]
 pub struct DataChannelInit {
@@ -49,8 +52,9 @@ pub enum DataChannelError {
     Utf8(#[from] Utf8Error),
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub enum DataState {
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DataChannelState {
     Connecting,
     Open,
     Closing,
@@ -63,7 +67,7 @@ pub struct DataBuffer<'a> {
     pub binary: bool,
 }
 
-pub type OnStateChange = Box<dyn FnMut(DataState) + Send + Sync>;
+pub type OnStateChange = Box<dyn FnMut(DataChannelState) + Send + Sync>;
 pub type OnMessage = Box<dyn FnMut(DataBuffer) + Send + Sync>;
 pub type OnBufferedAmountChange = Box<dyn FnMut(u64) + Send + Sync>;
 
@@ -85,7 +89,7 @@ impl DataChannel {
         self.handle.label()
     }
 
-    pub fn state(&self) -> DataState {
+    pub fn state(&self) -> DataChannelState {
         self.handle.state()
     }
 

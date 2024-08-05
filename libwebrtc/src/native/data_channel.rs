@@ -12,17 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::data_channel::{
-    DataBuffer, DataChannelError, DataChannelInit, DataState, OnBufferedAmountChange, OnMessage,
-    OnStateChange,
-};
+use std::{str, sync::Arc};
+
 use cxx::SharedPtr;
 use parking_lot::Mutex;
-use std::str;
-use std::sync::Arc;
 use webrtc_sys::data_channel as sys_dc;
 
-impl From<sys_dc::ffi::DataState> for DataState {
+use crate::data_channel::{
+    DataBuffer, DataChannelError, DataChannelInit, DataChannelState, OnBufferedAmountChange,
+    OnMessage, OnStateChange,
+};
+
+impl From<sys_dc::ffi::DataState> for DataChannelState {
     fn from(value: sys_dc::ffi::DataState) -> Self {
         match value {
             sys_dc::ffi::DataState::Connecting => Self::Connecting,
@@ -60,10 +61,7 @@ pub struct DataChannel {
 impl DataChannel {
     pub fn configure(sys_handle: SharedPtr<sys_dc::ffi::DataChannel>) -> Self {
         let observer = Arc::new(DataChannelObserver::default());
-        let dc = Self {
-            sys_handle: sys_handle.clone(),
-            observer: observer.clone(),
-        };
+        let dc = Self { sys_handle: sys_handle.clone(), observer: observer.clone() };
 
         dc.sys_handle
             .register_observer(Box::new(sys_dc::DataChannelObserverWrapper::new(observer)));
@@ -75,16 +73,9 @@ impl DataChannel {
             str::from_utf8(data)?;
         }
 
-        let buffer = sys_dc::ffi::DataBuffer {
-            ptr: data.as_ptr(),
-            len: data.len(),
-            binary,
-        };
+        let buffer = sys_dc::ffi::DataBuffer { ptr: data.as_ptr(), len: data.len(), binary };
 
-        self.sys_handle
-            .send(&buffer)
-            .then_some(())
-            .ok_or(DataChannelError::Send)
+        self.sys_handle.send(&buffer).then_some(()).ok_or(DataChannelError::Send)
     }
 
     pub fn id(&self) -> i32 {
@@ -95,7 +86,7 @@ impl DataChannel {
         self.sys_handle.label()
     }
 
-    pub fn state(&self) -> DataState {
+    pub fn state(&self) -> DataChannelState {
         self.sys_handle.state().into()
     }
 

@@ -12,14 +12,15 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::prelude::*;
-use libwebrtc::prelude::*;
+use std::{fmt::Debug, sync::Arc};
+
+use libwebrtc::{prelude::*, stats::RtcStats};
 use livekit_protocol as proto;
 use livekit_protocol::enum_dispatch;
 use parking_lot::{Mutex, RwLock};
-use std::fmt::Debug;
-use std::sync::Arc;
 use thiserror::Error;
+
+use crate::prelude::*;
 
 mod audio_track;
 mod local_audio_track;
@@ -78,6 +79,7 @@ macro_rules! track_dispatch {
             pub fn kind(self: &Self) -> TrackKind;
             pub fn source(self: &Self) -> TrackSource;
             pub fn stream_state(self: &Self) -> StreamState;
+            pub fn is_enabled(self: &Self) -> bool;
             pub fn enable(self: &Self) -> ();
             pub fn disable(self: &Self) -> ();
             pub fn is_muted(self: &Self) -> bool;
@@ -111,6 +113,15 @@ impl Track {
             Self::RemoteVideo(track) => track.rtc_track().into(),
         }
     }
+
+    pub async fn get_stats(&self) -> RoomResult<Vec<RtcStats>> {
+        match self {
+            Self::LocalAudio(track) => track.get_stats().await,
+            Self::LocalVideo(track) => track.get_stats().await,
+            Self::RemoteAudio(track) => track.get_stats().await,
+            Self::RemoteVideo(track) => track.get_stats().await,
+        }
+    }
 }
 
 pub(super) use track_dispatch;
@@ -121,8 +132,8 @@ type UnmutedHandler = Box<dyn Fn(Track) + Send>;
 #[derive(Default)]
 struct TrackEvents {
     // These mute handlers are only called for local tracks
-    pub muted: Mutex<Option<MutedHandler>>,
-    pub unmuted: Mutex<Option<UnmutedHandler>>,
+    pub muted: Option<MutedHandler>,
+    pub unmuted: Option<UnmutedHandler>,
 }
 
 #[derive(Debug)]
@@ -139,8 +150,8 @@ struct TrackInfo {
 pub(super) struct TrackInner {
     info: RwLock<TrackInfo>,
     rtc_track: MediaStreamTrack,
-    events: TrackEvents,
-    receiver: Option<RtpReceiver>
+    events: Mutex<TrackEvents>,
+    receiver: Option<RtpReceiver>,
 }
 
 pub(super) fn new_inner(
@@ -183,10 +194,10 @@ pub(super) fn set_muted(inner: &Arc<TrackInner>, track: &Track, muted: bool) {
     inner.info.write().muted = muted;
 
     if muted {
-        if let Some(on_mute) = inner.events.muted.lock().as_ref() {
+        if let Some(on_mute) = inner.events.lock().muted.as_ref() {
             on_mute(track.clone());
         }
-    } else if let Some(on_unmute) = inner.events.unmuted.lock().as_ref() {
+    } else if let Some(on_unmute) = inner.events.lock().muted.as_ref() {
         on_unmute(track.clone());
     }
 }

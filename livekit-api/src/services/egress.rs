@@ -12,10 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{ServiceBase, ServiceResult, LIVEKIT_PACKAGE};
-use crate::services::twirp_client::TwirpClient;
-use crate::{access_token::VideoGrants, get_env_keys};
 use livekit_protocol as proto;
+
+use super::{ServiceBase, ServiceResult, LIVEKIT_PACKAGE};
+use crate::{access_token::VideoGrants, get_env_keys, services::twirp_client::TwirpClient};
 
 #[derive(Default, Clone, Debug)]
 pub struct RoomCompositeOptions {
@@ -31,6 +31,13 @@ pub struct WebOptions {
     pub encoding: encoding::EncodingOptions,
     pub audio_only: bool,
     pub video_only: bool,
+    pub await_start_signal: bool,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct ParticipantEgressOptions {
+    pub screenshare: bool,
+    pub encoding: encoding::EncodingOptions,
 }
 
 #[derive(Default, Clone, Debug)]
@@ -45,6 +52,7 @@ pub enum EgressOutput {
     File(proto::EncodedFileOutput),
     Stream(proto::StreamOutput),
     Segments(proto::SegmentedFileOutput),
+    Image(proto::ImageOutput),
 }
 
 #[derive(Debug, Clone)]
@@ -93,7 +101,7 @@ impl EgressClient {
         outputs: Vec<EgressOutput>,
         options: RoomCompositeOptions,
     ) -> ServiceResult<proto::EgressInfo> {
-        let (file_outputs, stream_outputs, segment_outputs) = get_outputs(outputs);
+        let (file_outputs, stream_outputs, segment_outputs, image_outputs) = get_outputs(outputs);
         self.client
             .request(
                 SVC,
@@ -110,12 +118,11 @@ impl EgressClient {
                     file_outputs,
                     stream_outputs,
                     segment_outputs,
+                    image_outputs,
                     output: None, // Deprecated
                 },
-                self.base.auth_header(VideoGrants {
-                    room_record: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -127,7 +134,7 @@ impl EgressClient {
         outputs: Vec<EgressOutput>,
         options: WebOptions,
     ) -> ServiceResult<proto::EgressInfo> {
-        let (file_outputs, stream_outputs, segment_outputs) = get_outputs(outputs);
+        let (file_outputs, stream_outputs, segment_outputs, image_outputs) = get_outputs(outputs);
         self.client
             .request(
                 SVC,
@@ -142,13 +149,43 @@ impl EgressClient {
                     file_outputs,
                     stream_outputs,
                     segment_outputs,
-                    output: None,              // Deprecated
-                    await_start_signal: false, // TODO Expose
+                    image_outputs,
+                    output: None, // Deprecated
+                    await_start_signal: options.await_start_signal,
                 },
-                self.base.auth_header(VideoGrants {
-                    room_record: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
+            )
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn start_participant_egress(
+        &self,
+        room: &str,
+        participant_identity: &str,
+        outputs: Vec<EgressOutput>,
+        options: ParticipantEgressOptions,
+    ) -> ServiceResult<proto::EgressInfo> {
+        let (file_outputs, stream_outputs, segment_outputs, image_outputs) = get_outputs(outputs);
+        self.client
+            .request(
+                SVC,
+                "StartParticipantEgress",
+                proto::ParticipantEgressRequest {
+                    room_name: room.to_string(),
+                    identity: participant_identity.to_string(),
+                    options: Some(proto::participant_egress_request::Options::Advanced(
+                        options.encoding.into(),
+                    )),
+                    screen_share: options.screenshare,
+                    file_outputs,
+                    stream_outputs,
+                    segment_outputs,
+                    image_outputs,
+                },
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -160,7 +197,7 @@ impl EgressClient {
         outputs: Vec<EgressOutput>,
         options: TrackCompositeOptions,
     ) -> ServiceResult<proto::EgressInfo> {
-        let (file_outputs, stream_outputs, segment_outputs) = get_outputs(outputs);
+        let (file_outputs, stream_outputs, segment_outputs, image_outputs) = get_outputs(outputs);
         self.client
             .request(
                 SVC,
@@ -175,12 +212,11 @@ impl EgressClient {
                     file_outputs,
                     stream_outputs,
                     segment_outputs,
+                    image_outputs,
                     output: None, // Deprecated
                 },
-                self.base.auth_header(VideoGrants {
-                    room_record: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -208,10 +244,8 @@ impl EgressClient {
                     },
                     track_id: track_id.to_string(),
                 },
-                self.base.auth_header(VideoGrants {
-                    room_record: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -230,10 +264,8 @@ impl EgressClient {
                     egress_id: egress_id.to_owned(),
                     layout: layout.to_owned(),
                 },
-                self.base.auth_header(VideoGrants {
-                    room_record: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -254,10 +286,8 @@ impl EgressClient {
                     add_output_urls,
                     remove_output_urls,
                 },
-                self.base.auth_header(VideoGrants {
-                    room_record: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -281,15 +311,9 @@ impl EgressClient {
             .request(
                 SVC,
                 "ListEgress",
-                proto::ListEgressRequest {
-                    room_name,
-                    egress_id,
-                    active: options.active,
-                },
-                self.base.auth_header(VideoGrants {
-                    room_record: true,
-                    ..Default::default()
-                })?,
+                proto::ListEgressRequest { room_name, egress_id, active: options.active },
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
             )
             .await?;
 
@@ -301,13 +325,9 @@ impl EgressClient {
             .request(
                 SVC,
                 "StopEgress",
-                proto::StopEgressRequest {
-                    egress_id: egress_id.to_owned(),
-                },
-                self.base.auth_header(VideoGrants {
-                    room_record: true,
-                    ..Default::default()
-                })?,
+                proto::StopEgressRequest { egress_id: egress_id.to_owned() },
+                self.base
+                    .auth_header(VideoGrants { room_record: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -320,20 +340,23 @@ fn get_outputs(
     Vec<proto::EncodedFileOutput>,
     Vec<proto::StreamOutput>,
     Vec<proto::SegmentedFileOutput>,
+    Vec<proto::ImageOutput>,
 ) {
     let mut file_outputs = Vec::new();
     let mut stream_outputs = Vec::new();
     let mut segment_outputs = Vec::new();
+    let mut image_outputs = Vec::new();
 
     for output in outputs {
         match output {
             EgressOutput::File(f) => file_outputs.push(f),
             EgressOutput::Stream(s) => stream_outputs.push(s),
             EgressOutput::Segments(s) => segment_outputs.push(s),
+            EgressOutput::Image(i) => image_outputs.push(i),
         }
     }
 
-    (file_outputs, stream_outputs, segment_outputs)
+    (file_outputs, stream_outputs, segment_outputs, image_outputs)
 }
 
 pub mod encoding {
@@ -351,6 +374,8 @@ pub mod encoding {
         pub video_codec: proto::VideoCodec,
         pub video_bitrate: i32,
         pub keyframe_interval: f64,
+        pub audio_quality: i32,
+        pub video_quality: i32,
     }
 
     impl From<EncodingOptions> for proto::EncodingOptions {
@@ -366,6 +391,8 @@ pub mod encoding {
                 video_codec: opts.video_codec as i32,
                 video_bitrate: opts.video_bitrate,
                 key_frame_interval: opts.keyframe_interval,
+                audio_quality: opts.audio_quality,
+                video_quality: opts.video_quality,
             }
         }
     }
@@ -383,6 +410,8 @@ pub mod encoding {
                 video_codec: proto::VideoCodec::H264Main,
                 video_bitrate: 4500,
                 keyframe_interval: 0.0,
+                audio_quality: 0,
+                video_quality: 0,
             }
         }
     }
@@ -393,41 +422,19 @@ pub mod encoding {
         }
     }
 
-    pub const H264_720P_30: EncodingOptions = EncodingOptions {
-        width: 1280,
-        height: 720,
-        video_bitrate: 3000,
-        ..EncodingOptions::new()
-    };
-    pub const H264_720P_60: EncodingOptions = EncodingOptions {
-        width: 1280,
-        height: 720,
-        framerate: 60,
-        ..EncodingOptions::new()
-    };
+    pub const H264_720P_30: EncodingOptions =
+        EncodingOptions { width: 1280, height: 720, video_bitrate: 3000, ..EncodingOptions::new() };
+    pub const H264_720P_60: EncodingOptions =
+        EncodingOptions { width: 1280, height: 720, framerate: 60, ..EncodingOptions::new() };
     pub const H264_1080P_30: EncodingOptions = EncodingOptions::new();
-    pub const H264_1080P_60: EncodingOptions = EncodingOptions {
-        framerate: 60,
-        video_bitrate: 6000,
-        ..EncodingOptions::new()
-    };
-    pub const PORTRAIT_H264_720P_30: EncodingOptions = EncodingOptions {
-        width: 720,
-        height: 1280,
-        video_bitrate: 3000,
-        ..EncodingOptions::new()
-    };
-    pub const PORTRAIT_H264_720P_60: EncodingOptions = EncodingOptions {
-        width: 720,
-        height: 1280,
-        framerate: 60,
-        ..EncodingOptions::new()
-    };
-    pub const PORTRAIT_H264_1080P_30: EncodingOptions = EncodingOptions {
-        width: 1080,
-        height: 1920,
-        ..EncodingOptions::new()
-    };
+    pub const H264_1080P_60: EncodingOptions =
+        EncodingOptions { framerate: 60, video_bitrate: 6000, ..EncodingOptions::new() };
+    pub const PORTRAIT_H264_720P_30: EncodingOptions =
+        EncodingOptions { width: 720, height: 1280, video_bitrate: 3000, ..EncodingOptions::new() };
+    pub const PORTRAIT_H264_720P_60: EncodingOptions =
+        EncodingOptions { width: 720, height: 1280, framerate: 60, ..EncodingOptions::new() };
+    pub const PORTRAIT_H264_1080P_30: EncodingOptions =
+        EncodingOptions { width: 1080, height: 1920, ..EncodingOptions::new() };
     pub const PORTRAIT_H264_1080P_60: EncodingOptions = EncodingOptions {
         width: 1080,
         height: 1920,

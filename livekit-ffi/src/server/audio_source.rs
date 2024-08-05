@@ -14,9 +14,10 @@
 
 use std::{borrow::Cow, slice};
 
+use livekit::webrtc::prelude::*;
+
 use super::FfiHandle;
 use crate::{proto, server, FfiError, FfiHandleId, FfiResult};
-use livekit::webrtc::prelude::*;
 
 pub struct FfiAudioSource {
     pub handle_id: FfiHandleId,
@@ -37,26 +38,20 @@ impl FfiAudioSource {
             #[cfg(not(target_arch = "wasm32"))]
             proto::AudioSourceType::AudioSourceNative => {
                 use livekit::webrtc::audio_source::native::NativeAudioSource;
+
                 let audio_source = NativeAudioSource::new(
                     new_source.options.map(Into::into).unwrap_or_default(),
                     new_source.sample_rate,
                     new_source.num_channels,
+                    new_source.enable_queue,
                 );
                 RtcAudioSource::Native(audio_source)
             }
-            _ => {
-                return Err(FfiError::InvalidRequest(
-                    "unsupported audio source type".into(),
-                ))
-            }
+            _ => return Err(FfiError::InvalidRequest("unsupported audio source type".into())),
         };
 
         let handle_id = server.next_id();
-        let source = Self {
-            handle_id,
-            source_type,
-            source: source_inner,
-        };
+        let source = Self { handle_id, source_type, source: source_inner };
 
         let info = proto::AudioSourceInfo::from(&source);
         server.store_handle(source.handle_id, source);
@@ -79,36 +74,36 @@ impl FfiAudioSource {
         let source = self.source.clone();
         let async_id = server.next_id();
 
-        server.async_runtime.spawn(async move {
-            // The data must be available as long as the client receive the callback.
-            let data = unsafe {
-                let len = buffer.num_channels * buffer.samples_per_channel;
-                slice::from_raw_parts(buffer.data_ptr as *const i16, len as usize)
-            };
+        let data = unsafe {
+            let len = buffer.num_channels * buffer.samples_per_channel;
+            slice::from_raw_parts(buffer.data_ptr as *const i16, len as usize)
+        }
+        .to_vec();
 
+        let handle = server.async_runtime.spawn(async move {
+            // The data must be available as long as the client receive the callback.
             match source {
                 #[cfg(not(target_arch = "wasm32"))]
                 RtcAudioSource::Native(ref source) => {
                     let audio_frame = AudioFrame {
-                        data: Cow::Borrowed(data),
+                        data: Cow::Owned(data),
                         sample_rate: buffer.sample_rate,
                         num_channels: buffer.num_channels,
                         samples_per_channel: buffer.samples_per_channel,
                     };
 
                     let res = source.capture_frame(&audio_frame).await;
-                    let _ = server
-                        .send_event(proto::ffi_event::Message::CaptureAudioFrame(
-                            proto::CaptureAudioFrameCallback {
-                                async_id,
-                                error: res.err().map(|e| e.to_string()),
-                            },
-                        ))
-                        .await;
+                    let _ = server.send_event(proto::ffi_event::Message::CaptureAudioFrame(
+                        proto::CaptureAudioFrameCallback {
+                            async_id,
+                            error: res.err().map(|e| e.to_string()),
+                        },
+                    ));
                 }
                 _ => {}
             }
         });
+        server.watch_panic(handle);
 
         Ok(proto::CaptureAudioFrameResponse { async_id })
     }

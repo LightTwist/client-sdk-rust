@@ -12,14 +12,17 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::access_token::{AccessToken, AccessTokenError, VideoGrants};
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use std::fmt::Debug;
+
+use http::header::{HeaderMap, HeaderValue, AUTHORIZATION};
 use thiserror::Error;
+
+use crate::access_token::{AccessToken, AccessTokenError, SIPGrants, VideoGrants};
 
 pub mod egress;
 pub mod ingress;
 pub mod room;
+pub mod sip;
 
 mod twirp_client;
 
@@ -44,30 +47,29 @@ struct ServiceBase {
 
 impl Debug for ServiceBase {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ServiceBase")
-            .field("api_key", &self.api_key)
-            .finish()
+        f.debug_struct("ServiceBase").field("api_key", &self.api_key).finish()
     }
 }
 
 impl ServiceBase {
     pub fn with_api_key(api_key: &str, api_secret: &str) -> Self {
-        Self {
-            api_key: api_key.to_owned(),
-            api_secret: api_secret.to_owned(),
-        }
+        Self { api_key: api_key.to_owned(), api_secret: api_secret.to_owned() }
     }
 
-    pub fn auth_header(&self, grants: VideoGrants) -> Result<HeaderMap, AccessTokenError> {
-        let token = AccessToken::with_api_key(&self.api_key, &self.api_secret)
-            .with_grants(grants)
-            .to_jwt()?;
+    pub fn auth_header(
+        &self,
+        grants: VideoGrants,
+        sip: Option<SIPGrants>,
+    ) -> Result<HeaderMap, AccessTokenError> {
+        let mut tok =
+            AccessToken::with_api_key(&self.api_key, &self.api_secret).with_grants(grants);
+        if sip.is_some() {
+            tok = tok.with_sip_grants(sip.unwrap())
+        }
+        let token = tok.to_jwt()?;
 
         let mut headers = HeaderMap::new();
-        headers.insert(
-            AUTHORIZATION,
-            HeaderValue::from_str(&format!("Bearer {}", token)).unwrap(),
-        );
+        headers.insert(AUTHORIZATION, HeaderValue::from_str(&format!("Bearer {}", token)).unwrap());
         Ok(headers)
     }
 }

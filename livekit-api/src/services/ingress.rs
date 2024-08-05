@@ -12,19 +12,36 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{ServiceBase, ServiceResult, LIVEKIT_PACKAGE};
-use crate::services::twirp_client::TwirpClient;
-use crate::{access_token::VideoGrants, get_env_keys};
 use livekit_protocol as proto;
 
+use super::{ServiceBase, ServiceResult, LIVEKIT_PACKAGE};
+use crate::{access_token::VideoGrants, get_env_keys, services::twirp_client::TwirpClient};
+
 #[derive(Default, Clone, Debug)]
-pub struct IngressOptions {
+pub struct CreateIngressOptions {
     pub name: String,
     pub room_name: String,
+    pub participant_metadata: String,
     pub participant_identity: String,
     pub participant_name: String,
     pub audio: proto::IngressAudioOptions,
     pub video: proto::IngressVideoOptions,
+    pub bypass_transcoding: bool,
+    pub enable_transcoding: Option<bool>,
+    pub url: String,
+}
+
+#[derive(Default, Clone, Debug)]
+pub struct UpdateIngressOptions {
+    pub name: String,
+    pub room_name: String,
+    pub participant_metadata: String,
+    pub participant_identity: String,
+    pub participant_name: String,
+    pub audio: proto::IngressAudioOptions,
+    pub video: proto::IngressVideoOptions,
+    pub bypass_transcoding: Option<bool>,
+    pub enable_transcoding: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +75,7 @@ impl IngressClient {
     pub async fn create_ingress(
         &self,
         input_type: proto::IngressInput,
-        options: IngressOptions,
+        options: CreateIngressOptions,
     ) -> ServiceResult<proto::IngressInfo> {
         self.client
             .request(
@@ -68,17 +85,17 @@ impl IngressClient {
                     input_type: input_type as i32,
                     name: options.name,
                     room_name: options.room_name,
+                    participant_metadata: options.participant_metadata,
                     participant_identity: options.participant_identity,
                     participant_name: options.participant_name,
                     audio: Some(options.audio),
                     video: Some(options.video),
-                    bypass_transcoding: false, // TODO Expose
-                    ..Default::default()
+                    bypass_transcoding: options.bypass_transcoding,
+                    enable_transcoding: options.enable_transcoding,
+                    url: options.url,
                 },
-                self.base.auth_header(VideoGrants {
-                    ingress_admin: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { ingress_admin: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -87,7 +104,7 @@ impl IngressClient {
     pub async fn update_ingress(
         &self,
         ingress_id: &str,
-        options: IngressOptions,
+        options: UpdateIngressOptions,
     ) -> ServiceResult<proto::IngressInfo> {
         self.client
             .request(
@@ -97,16 +114,16 @@ impl IngressClient {
                     ingress_id: ingress_id.to_owned(),
                     name: options.name,
                     room_name: options.room_name,
+                    participant_metadata: options.participant_metadata,
                     participant_identity: options.participant_identity,
                     participant_name: options.participant_name,
                     audio: Some(options.audio),
                     video: Some(options.video),
-                    bypass_transcoding: None, // TODO Expose
+                    bypass_transcoding: options.bypass_transcoding,
+                    enable_transcoding: options.enable_transcoding,
                 },
-                self.base.auth_header(VideoGrants {
-                    ingress_admin: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { ingress_admin: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)
@@ -131,10 +148,8 @@ impl IngressClient {
                         _ => Default::default(),
                     },
                 },
-                self.base.auth_header(VideoGrants {
-                    ingress_admin: true,
-                    ..Default::default()
-                })?,
+                self.base
+                    .auth_header(VideoGrants { ingress_admin: true, ..Default::default() }, None)?,
             )
             .await?;
 
@@ -146,13 +161,9 @@ impl IngressClient {
             .request(
                 SVC,
                 "DeleteIngress",
-                proto::DeleteIngressRequest {
-                    ingress_id: ingress_id.to_owned(),
-                },
-                self.base.auth_header(VideoGrants {
-                    ingress_admin: true,
-                    ..Default::default()
-                })?,
+                proto::DeleteIngressRequest { ingress_id: ingress_id.to_owned() },
+                self.base
+                    .auth_header(VideoGrants { ingress_admin: true, ..Default::default() }, None)?,
             )
             .await
             .map_err(Into::into)

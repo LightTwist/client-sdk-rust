@@ -12,13 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::{PermissionStatus, SubscriptionStatus, TrackPublication, TrackPublicationInner};
-use crate::e2ee::EncryptionType;
-use crate::prelude::*;
+use std::{fmt::Debug, sync::Arc};
+
 use livekit_protocol as proto;
 use parking_lot::{Mutex, RwLock};
-use std::fmt::Debug;
-use std::sync::Arc;
+
+use super::{PermissionStatus, SubscriptionStatus, TrackPublication, TrackPublicationInner};
+use crate::{e2ee::EncryptionType, prelude::*};
 
 type SubscribedHandler = Box<dyn Fn(RemoteTrackPublication, RemoteTrack) + Send>;
 type UnsubscribedHandler = Box<dyn Fn(RemoteTrackPublication, RemoteTrack) + Send>;
@@ -27,6 +27,7 @@ type SubscriptionStatusChangedHandler =
 type PermissionStatusChangedHandler =
     Box<dyn Fn(RemoteTrackPublication, PermissionStatus, PermissionStatus) + Send>; // old_status, new_status
 type SubscriptionUpdateNeededHandler = Box<dyn Fn(RemoteTrackPublication, bool) + Send>;
+type EnabledStatusChangedHandler = Box<dyn Fn(RemoteTrackPublication, bool) + Send>;
 
 #[derive(Default)]
 struct RemoteEvents {
@@ -35,6 +36,7 @@ struct RemoteEvents {
     subscription_status_changed: Mutex<Option<SubscriptionStatusChangedHandler>>,
     permission_status_changed: Mutex<Option<PermissionStatusChangedHandler>>,
     subscription_update_needed: Mutex<Option<SubscriptionUpdateNeededHandler>>,
+    enabled_status_changed: Mutex<Option<EnabledStatusChangedHandler>>,
 }
 
 #[derive(Debug)]
@@ -72,10 +74,7 @@ impl RemoteTrackPublication {
         Self {
             inner: super::new_inner(info, track.map(Into::into)),
             remote: Arc::new(RemoteInner {
-                info: RwLock::new(RemoteInfo {
-                    subscribed: auto_subscribe,
-                    allowed: true,
-                }),
+                info: RwLock::new(RemoteInfo { subscribed: auto_subscribe, allowed: true }),
                 events: Default::default(),
             }),
         }
@@ -114,12 +113,8 @@ impl RemoteTrackPublication {
 
     pub(crate) fn emit_subscription_update(&self, old_subscription_state: SubscriptionStatus) {
         if old_subscription_state != self.subscription_status() {
-            if let Some(subscription_status_changed) = self
-                .remote
-                .events
-                .subscription_status_changed
-                .lock()
-                .as_ref()
+            if let Some(subscription_status_changed) =
+                self.remote.events.subscription_status_changed.lock().as_ref()
             {
                 subscription_status_changed(
                     self.clone(),
@@ -150,11 +145,7 @@ impl RemoteTrackPublication {
     }
 
     pub(crate) fn update_info(&self, new_info: proto::TrackInfo) {
-        super::update_info(
-            &self.inner,
-            &TrackPublication::Remote(self.clone()),
-            new_info.clone(),
-        );
+        super::update_info(&self.inner, &TrackPublication::Remote(self.clone()), new_info.clone());
 
         let mut info = self.inner.info.write();
         let muted = info.muted;
@@ -217,6 +208,13 @@ impl RemoteTrackPublication {
         *self.remote.events.subscription_update_needed.lock() = Some(Box::new(f));
     }
 
+    pub(crate) fn on_enabled_status_changed(
+        &self,
+        f: impl Fn(RemoteTrackPublication, bool) + Send + 'static,
+    ) {
+        *self.remote.events.enabled_status_changed.lock() = Some(Box::new(f));
+    }
+
     pub fn set_subscribed(&self, subscribed: bool) {
         let old_subscription_state = self.subscription_status();
         let old_permission_state = self.permission_status();
@@ -230,22 +228,38 @@ impl RemoteTrackPublication {
             }
         }
 
-        // TODO(theomonnom): Wait for the PC onRemoveTrack event instead?
-        self.set_track(None);
+        if !subscribed {
+            // TODO(theomonnom): Wait for the PC onRemoveTrack event instead?
+            self.set_track(None);
+        }
 
         // Request to send an update to the SFU
-        if let Some(subscription_update_needed) = self
-            .remote
-            .events
-            .subscription_update_needed
-            .lock()
-            .as_ref()
+        if let Some(subscription_update_needed) =
+            self.remote.events.subscription_update_needed.lock().as_ref()
         {
             subscription_update_needed(self.clone(), subscribed);
         }
 
         self.emit_subscription_update(old_subscription_state);
         self.emit_permission_update(old_permission_state);
+    }
+
+    pub fn set_enabled(&self, enabled: bool) {
+        if self.is_subscribed() && enabled != self.is_enabled() {
+            let track = self.track().unwrap();
+            if self.is_enabled() {
+                track.disable();
+            } else {
+                track.enable();
+            }
+
+            // Request to send an update to the SFU
+            if let Some(enabled_status_changed) =
+                self.remote.events.enabled_status_changed.lock().as_ref()
+            {
+                enabled_status_changed(self.clone(), enabled)
+            }
+        }
     }
 
     pub fn subscription_status(&self) -> SubscriptionStatus {
@@ -280,6 +294,10 @@ impl RemoteTrackPublication {
         self.remote.info.read().allowed
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.track().is_some_and(|x| x.is_enabled())
+    }
+
     pub fn sid(&self) -> TrackSid {
         self.inner.info.read().sid.clone()
     }
@@ -305,12 +323,7 @@ impl RemoteTrackPublication {
     }
 
     pub fn track(&self) -> Option<RemoteTrack> {
-        self.inner
-            .info
-            .read()
-            .track
-            .clone()
-            .map(|track| track.try_into().unwrap())
+        self.inner.info.read().track.clone().map(|track| track.try_into().unwrap())
     }
 
     pub fn mime_type(&self) -> String {

@@ -12,44 +12,42 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::data_channel::DataChannel;
-use crate::data_channel::DataChannelInit;
-use crate::ice_candidate::IceCandidate;
-use crate::imp::data_channel as imp_dc;
-use crate::imp::ice_candidate as imp_ic;
-use crate::imp::media_stream as imp_ms;
-use crate::imp::media_stream_track as imp_mst;
-use crate::imp::rtp_receiver as imp_rr;
-use crate::imp::rtp_sender as imp_rs;
-use crate::imp::rtp_transceiver as imp_rt;
-use crate::imp::session_description as imp_sdp;
-use crate::media_stream::MediaStream;
-use crate::media_stream_track::MediaStreamTrack;
-use crate::peer_connection::{
-    AnswerOptions, IceCandidateError, IceConnectionState, IceGatheringState, OfferOptions,
-    OnConnectionChange, OnDataChannel, OnIceCandidate, OnIceCandidateError, OnIceConnectionChange,
-    OnIceGatheringChange, OnNegotiationNeeded, OnSignalingChange, OnTrack, PeerConnectionState,
-    SignalingState, TrackEvent,
-};
-use crate::peer_connection_factory::{
-    ContinualGatheringPolicy, IceServer, IceTransportsType, RtcConfiguration,
-};
-use crate::rtp_receiver::RtpReceiver;
-use crate::rtp_sender::RtpSender;
-use crate::rtp_transceiver::RtpTransceiver;
-use crate::rtp_transceiver::RtpTransceiverInit;
-use crate::MediaType;
-use crate::RtcErrorType;
-use crate::{session_description::SessionDescription, RtcError};
+use std::sync::Arc;
+
 use cxx::SharedPtr;
 use parking_lot::Mutex;
-use std::sync::Arc;
-use tokio::sync::mpsc;
-use tokio::sync::oneshot;
-use webrtc_sys::data_channel as sys_dc;
-use webrtc_sys::jsep as sys_jsep;
-use webrtc_sys::peer_connection as sys_pc;
-use webrtc_sys::rtc_error as sys_err;
+use tokio::sync::{mpsc, oneshot};
+use webrtc_sys::{
+    data_channel as sys_dc, jsep as sys_jsep, peer_connection as sys_pc,
+    peer_connection_factory as sys_pcf, rtc_error as sys_err,
+};
+
+use crate::{
+    data_channel::{DataChannel, DataChannelInit},
+    ice_candidate::IceCandidate,
+    imp::{
+        data_channel as imp_dc, ice_candidate as imp_ic, media_stream as imp_ms,
+        media_stream_track as imp_mst, rtp_receiver as imp_rr, rtp_sender as imp_rs,
+        rtp_transceiver as imp_rt, session_description as imp_sdp,
+    },
+    media_stream::MediaStream,
+    media_stream_track::MediaStreamTrack,
+    peer_connection::{
+        AnswerOptions, IceCandidateError, IceConnectionState, IceGatheringState, OfferOptions,
+        OnConnectionChange, OnDataChannel, OnIceCandidate, OnIceCandidateError,
+        OnIceConnectionChange, OnIceGatheringChange, OnNegotiationNeeded, OnSignalingChange,
+        OnTrack, PeerConnectionState, SignalingState, TrackEvent,
+    },
+    peer_connection_factory::{
+        ContinualGatheringPolicy, IceServer, IceTransportsType, RtcConfiguration,
+    },
+    rtp_receiver::RtpReceiver,
+    rtp_sender::RtpSender,
+    rtp_transceiver::{RtpTransceiver, RtpTransceiverInit},
+    session_description::SessionDescription,
+    stats::RtcStats,
+    MediaType, RtcError, RtcErrorType,
+};
 
 impl From<OfferOptions> for sys_pc::ffi::RtcOfferAnswerOptions {
     fn from(options: OfferOptions) -> Self {
@@ -183,10 +181,7 @@ impl PeerConnection {
         sys_handle: SharedPtr<sys_pc::ffi::PeerConnection>,
         observer: Arc<PeerObserver>,
     ) -> Self {
-        Self {
-            sys_handle,
-            observer,
-        }
+        Self { sys_handle, observer }
     }
 
     pub fn set_configuration(&self, config: RtcConfiguration) -> Result<(), RtcError> {
@@ -203,7 +198,7 @@ impl PeerConnection {
         options: OfferOptions,
     ) -> Result<SessionDescription, RtcError> {
         let (tx, mut rx) = mpsc::channel::<Result<SessionDescription, RtcError>>(1);
-        let ctx = Box::new(sys_pc::AsyncContext(Box::new(tx)));
+        let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
         type CtxType = mpsc::Sender<Result<SessionDescription, RtcError>>;
 
         self.sys_handle.create_offer(
@@ -229,7 +224,7 @@ impl PeerConnection {
         options: AnswerOptions,
     ) -> Result<SessionDescription, RtcError> {
         let (tx, mut rx) = mpsc::channel::<Result<SessionDescription, RtcError>>(1);
-        let ctx = Box::new(sys_pc::AsyncContext(Box::new(tx)));
+        let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
         type CtxType = mpsc::Sender<Result<SessionDescription, RtcError>>;
 
         self.sys_handle.create_answer(
@@ -252,42 +247,34 @@ impl PeerConnection {
 
     pub async fn set_local_description(&self, desc: SessionDescription) -> Result<(), RtcError> {
         let (tx, rx) = oneshot::channel::<Result<(), RtcError>>();
-        let ctx = Box::new(sys_pc::AsyncContext(Box::new(tx)));
+        let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
 
-        self.sys_handle
-            .set_local_description(desc.handle.sys_handle, ctx, |ctx, err| {
-                let tx = ctx
-                    .0
-                    .downcast::<oneshot::Sender<Result<(), RtcError>>>()
-                    .unwrap();
+        self.sys_handle.set_local_description(desc.handle.sys_handle, ctx, |ctx, err| {
+            let tx = ctx.0.downcast::<oneshot::Sender<Result<(), RtcError>>>().unwrap();
 
-                if err.ok() {
-                    let _ = tx.send(Ok(()));
-                } else {
-                    let _ = tx.send(Err(err.into()));
-                }
-            });
+            if err.ok() {
+                let _ = tx.send(Ok(()));
+            } else {
+                let _ = tx.send(Err(err.into()));
+            }
+        });
 
         rx.await.unwrap()
     }
 
     pub async fn set_remote_description(&self, desc: SessionDescription) -> Result<(), RtcError> {
         let (tx, rx) = oneshot::channel::<Result<(), RtcError>>();
-        let ctx = Box::new(sys_pc::AsyncContext(Box::new(tx)));
+        let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
 
-        self.sys_handle
-            .set_remote_description(desc.handle.sys_handle, ctx, |ctx, err| {
-                let tx = ctx
-                    .0
-                    .downcast::<oneshot::Sender<Result<(), RtcError>>>()
-                    .unwrap();
+        self.sys_handle.set_remote_description(desc.handle.sys_handle, ctx, |ctx, err| {
+            let tx = ctx.0.downcast::<oneshot::Sender<Result<(), RtcError>>>().unwrap();
 
-                if err.ok() {
-                    let _ = tx.send(Ok(()));
-                } else {
-                    let _ = tx.send(Err(err.into()));
-                }
-            });
+            if err.ok() {
+                let _ = tx.send(Ok(()));
+            } else {
+                let _ = tx.send(Err(err.into()));
+            }
+        });
 
         rx.await.map_err(|_| RtcError {
             error_type: RtcErrorType::Internal,
@@ -297,21 +284,17 @@ impl PeerConnection {
 
     pub async fn add_ice_candidate(&self, candidate: IceCandidate) -> Result<(), RtcError> {
         let (tx, rx) = oneshot::channel::<Result<(), RtcError>>();
-        let ctx = Box::new(sys_pc::AsyncContext(Box::new(tx)));
+        let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
 
-        self.sys_handle
-            .add_ice_candidate(candidate.handle.sys_handle, ctx, |ctx, err| {
-                let tx = ctx
-                    .0
-                    .downcast::<oneshot::Sender<Result<(), RtcError>>>()
-                    .unwrap();
+        self.sys_handle.add_ice_candidate(candidate.handle.sys_handle, ctx, |ctx, err| {
+            let tx = ctx.0.downcast::<oneshot::Sender<Result<(), RtcError>>>().unwrap();
 
-                if err.ok() {
-                    let _ = tx.send(Ok(()));
-                } else {
-                    let _ = tx.send(Err(err.into()));
-                }
-            });
+            if err.ok() {
+                let _ = tx.send(Ok(()));
+            } else {
+                let _ = tx.send(Err(err.into()));
+            }
+        });
 
         rx.await.map_err(|_| RtcError {
             error_type: RtcErrorType::Internal,
@@ -324,14 +307,12 @@ impl PeerConnection {
         label: &str,
         init: DataChannelInit,
     ) -> Result<DataChannel, RtcError> {
-        let res = self
-            .sys_handle
-            .create_data_channel(label.to_string(), init.into());
+        let res = self.sys_handle.create_data_channel(label.to_string(), init.into());
 
         match res {
-            Ok(sys_handle) => Ok(DataChannel {
-                handle: imp_dc::DataChannel::configure(sys_handle),
-            }),
+            Ok(sys_handle) => {
+                Ok(DataChannel { handle: imp_dc::DataChannel::configure(sys_handle) })
+            }
             Err(e) => Err(unsafe { sys_err::ffi::RtcError::from(e.what()).into() }),
         }
     }
@@ -345,9 +326,7 @@ impl PeerConnection {
         let res = self.sys_handle.add_track(track.sys_handle(), &stream_ids);
 
         match res {
-            Ok(sys_handle) => Ok(RtpSender {
-                handle: imp_rs::RtpSender { sys_handle },
-            }),
+            Ok(sys_handle) => Ok(RtpSender { handle: imp_rs::RtpSender { sys_handle } }),
             Err(e) => unsafe { Err(sys_err::ffi::RtcError::from(e.what()).into()) },
         }
     }
@@ -357,14 +336,10 @@ impl PeerConnection {
         track: MediaStreamTrack,
         init: RtpTransceiverInit,
     ) -> Result<RtpTransceiver, RtcError> {
-        let res = self
-            .sys_handle
-            .add_transceiver(track.sys_handle(), init.into());
+        let res = self.sys_handle.add_transceiver(track.sys_handle(), init.into());
 
         match res {
-            Ok(sys_handle) => Ok(RtpTransceiver {
-                handle: imp_rt::RtpTransceiver { sys_handle },
-            }),
+            Ok(sys_handle) => Ok(RtpTransceiver { handle: imp_rt::RtpTransceiver { sys_handle } }),
             Err(e) => unsafe { Err(sys_err::ffi::RtcError::from(e.what()).into()) },
         }
     }
@@ -374,16 +349,12 @@ impl PeerConnection {
         media_type: MediaType,
         init: RtpTransceiverInit,
     ) -> Result<RtpTransceiver, RtcError> {
-        let res = self
-            .sys_handle
-            .add_transceiver_for_media(media_type.into(), init.into());
+        let res = self.sys_handle.add_transceiver_for_media(media_type.into(), init.into());
 
         match res {
-            Ok(cxx_handle) => Ok(RtpTransceiver {
-                handle: imp_rt::RtpTransceiver {
-                    sys_handle: cxx_handle,
-                },
-            }),
+            Ok(cxx_handle) => {
+                Ok(RtpTransceiver { handle: imp_rt::RtpTransceiver { sys_handle: cxx_handle } })
+            }
             Err(e) => unsafe { Err(sys_err::ffi::RtcError::from(e.what()).into()) },
         }
     }
@@ -418,9 +389,7 @@ impl PeerConnection {
             return None;
         }
 
-        Some(SessionDescription {
-            handle: imp_sdp::SessionDescription { sys_handle: sdp },
-        })
+        Some(SessionDescription { handle: imp_sdp::SessionDescription { sys_handle: sdp } })
     }
 
     pub fn current_remote_description(&self) -> Option<SessionDescription> {
@@ -429,9 +398,7 @@ impl PeerConnection {
             return None;
         }
 
-        Some(SessionDescription {
-            handle: imp_sdp::SessionDescription { sys_handle: sdp },
-        })
+        Some(SessionDescription { handle: imp_sdp::SessionDescription { sys_handle: sdp } })
     }
 
     pub fn remove_track(&self, sender: RtpSender) -> Result<(), RtcError> {
@@ -440,15 +407,34 @@ impl PeerConnection {
             .map_err(|e| unsafe { sys_err::ffi::RtcError::from(e.what()).into() })
     }
 
+    pub async fn get_stats(&self) -> Result<Vec<RtcStats>, RtcError> {
+        let (tx, rx) = oneshot::channel::<Result<Vec<RtcStats>, RtcError>>();
+        let ctx = Box::new(sys_pc::PeerContext(Box::new(tx)));
+
+        self.sys_handle.get_stats(ctx, |ctx, stats| {
+            let tx = ctx.0.downcast::<oneshot::Sender<Result<Vec<RtcStats>, RtcError>>>().unwrap();
+
+            if stats.is_empty() {
+                let _ = tx.send(Ok(vec![]));
+                return;
+            }
+
+            // Unwrap because it should not happens
+            let vec = serde_json::from_str(&stats).unwrap();
+            let _ = tx.send(Ok(vec));
+        });
+
+        rx.await.map_err(|_| RtcError {
+            error_type: RtcErrorType::Internal,
+            message: "get_stats cancelled".to_owned(),
+        })?
+    }
+
     pub fn senders(&self) -> Vec<RtpSender> {
         self.sys_handle
             .get_senders()
             .into_iter()
-            .map(|sender| RtpSender {
-                handle: imp_rs::RtpSender {
-                    sys_handle: sender.ptr,
-                },
-            })
+            .map(|sender| RtpSender { handle: imp_rs::RtpSender { sys_handle: sender.ptr } })
             .collect()
     }
 
@@ -457,9 +443,7 @@ impl PeerConnection {
             .get_receivers()
             .into_iter()
             .map(|receiver| RtpReceiver {
-                handle: imp_rr::RtpReceiver {
-                    sys_handle: receiver.ptr,
-                },
+                handle: imp_rr::RtpReceiver { sys_handle: receiver.ptr },
             })
             .collect()
     }
@@ -469,9 +453,7 @@ impl PeerConnection {
             .get_transceivers()
             .into_iter()
             .map(|transceiver| RtpTransceiver {
-                handle: imp_rt::RtpTransceiver {
-                    sys_handle: transceiver.ptr,
-                },
+                handle: imp_rt::RtpTransceiver { sys_handle: transceiver.ptr },
             })
             .collect()
     }
@@ -526,7 +508,7 @@ pub struct PeerObserver {
     pub track_handler: Mutex<Option<OnTrack>>,
 }
 
-impl sys_pc::PeerConnectionObserver for PeerObserver {
+impl sys_pcf::PeerConnectionObserver for PeerObserver {
     fn on_signaling_change(&self, new_state: sys_pc::ffi::SignalingState) {
         if let Some(f) = self.signaling_change_handler.lock().as_mut() {
             f(new_state.into());
@@ -539,9 +521,7 @@ impl sys_pc::PeerConnectionObserver for PeerObserver {
 
     fn on_data_channel(&self, data_channel: SharedPtr<sys_dc::ffi::DataChannel>) {
         if let Some(f) = self.data_channel_handler.lock().as_mut() {
-            f(DataChannel {
-                handle: imp_dc::DataChannel::configure(data_channel),
-            });
+            f(DataChannel { handle: imp_dc::DataChannel::configure(data_channel) });
         }
     }
 
@@ -575,11 +555,7 @@ impl sys_pc::PeerConnectionObserver for PeerObserver {
 
     fn on_ice_candidate(&self, candidate: SharedPtr<sys_jsep::ffi::IceCandidate>) {
         if let Some(f) = self.ice_candidate_handler.lock().as_mut() {
-            f(IceCandidate {
-                handle: imp_ic::IceCandidate {
-                    sys_handle: candidate,
-                },
-            });
+            f(IceCandidate { handle: imp_ic::IceCandidate { sys_handle: candidate } });
         }
     }
 
@@ -592,13 +568,7 @@ impl sys_pc::PeerConnectionObserver for PeerObserver {
         error_text: String,
     ) {
         if let Some(f) = self.ice_candidate_error_handler.lock().as_mut() {
-            f(IceCandidateError {
-                address,
-                port,
-                url,
-                error_code,
-                error_text,
-            });
+            f(IceCandidateError { address, port, url, error_code, error_text });
         }
     }
 
@@ -612,7 +582,7 @@ impl sys_pc::PeerConnectionObserver for PeerObserver {
 
     fn on_ice_selected_candidate_pair_changed(
         &self,
-        _event: sys_pc::ffi::CandidatePairChangeEvent,
+        _event: sys_pcf::ffi::CandidatePairChangeEvent,
     ) {
     }
 
@@ -630,22 +600,14 @@ impl sys_pc::PeerConnectionObserver for PeerObserver {
             let track = receiver.track();
 
             f(TrackEvent {
-                receiver: RtpReceiver {
-                    handle: imp_rr::RtpReceiver {
-                        sys_handle: receiver,
-                    },
-                },
+                receiver: RtpReceiver { handle: imp_rr::RtpReceiver { sys_handle: receiver } },
                 streams: streams
                     .into_iter()
-                    .map(|s| MediaStream {
-                        handle: imp_ms::MediaStream { sys_handle: s.ptr },
-                    })
+                    .map(|s| MediaStream { handle: imp_ms::MediaStream { sys_handle: s.ptr } })
                     .collect(),
                 track: imp_mst::new_media_stream_track(track),
                 transceiver: RtpTransceiver {
-                    handle: imp_rt::RtpTransceiver {
-                        sys_handle: transceiver,
-                    },
+                    handle: imp_rt::RtpTransceiver { sys_handle: transceiver },
                 },
             });
         }

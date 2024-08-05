@@ -12,22 +12,25 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::ConnectionQuality;
-use super::ParticipantInner;
-use crate::e2ee::EncryptionType;
-use crate::options;
-use crate::options::compute_video_encodings;
-use crate::options::video_layers_from_encodings;
-use crate::options::TrackPublishOptions;
-use crate::prelude::*;
-use crate::rtc_engine::RtcEngine;
-use crate::DataPacketKind;
+use std::{
+    collections::HashMap,
+    fmt::Debug,
+    sync::{self, Arc},
+};
+
 use libwebrtc::rtp_parameters::RtpEncodingParameters;
 use livekit_protocol as proto;
 use parking_lot::Mutex;
-use std::collections::HashMap;
-use std::fmt::Debug;
-use std::sync::Arc;
+
+use super::{ConnectionQuality, ParticipantInner};
+use crate::{
+    e2ee::EncryptionType,
+    options,
+    options::{compute_video_encodings, video_layers_from_encodings, TrackPublishOptions},
+    prelude::*,
+    rtc_engine::RtcEngine,
+    DataPacket, SipDTMF, Transcription,
+};
 
 type LocalTrackPublishedHandler = Box<dyn Fn(LocalParticipant, LocalTrackPublication) + Send>;
 type LocalTrackUnpublishedHandler = Box<dyn Fn(LocalParticipant, LocalTrackPublication) + Send>;
@@ -66,19 +69,17 @@ impl LocalParticipant {
         identity: ParticipantIdentity,
         name: String,
         metadata: String,
+        attributes: HashMap<String, String>,
         encryption_type: EncryptionType,
     ) -> Self {
         Self {
-            inner: super::new_inner(rtc_engine, sid, identity, name, metadata),
-            local: Arc::new(LocalInfo {
-                events: LocalEvents::default(),
-                encryption_type,
-            }),
+            inner: super::new_inner(rtc_engine, sid, identity, name, metadata, attributes),
+            local: Arc::new(LocalInfo { events: LocalEvents::default(), encryption_type }),
         }
     }
 
-    pub(crate) fn internal_tracks(&self) -> HashMap<TrackSid, TrackPublication> {
-        self.inner.tracks.read().clone()
+    pub(crate) fn internal_track_publications(&self) -> HashMap<TrackSid, TrackPublication> {
+        self.inner.track_publications.read().clone()
     }
 
     pub(crate) fn update_info(&self, info: proto::ParticipantInfo) {
@@ -139,6 +140,13 @@ impl LocalParticipant {
         super::on_name_changed(&self.inner, handler)
     }
 
+    pub(crate) fn on_attributes_changed(
+        &self,
+        handler: impl Fn(Participant, HashMap<String, String>) + Send + 'static,
+    ) {
+        super::on_attributes_changed(&self.inner, handler)
+    }
+
     pub(crate) fn add_publication(&self, publication: TrackPublication) {
         super::add_publication(&self.inner, &Participant::Local(self.clone()), publication);
     }
@@ -148,7 +156,7 @@ impl LocalParticipant {
     }
 
     pub(crate) fn published_tracks_info(&self) -> Vec<proto::TrackPublishedResponse> {
-        let tracks = self.tracks();
+        let tracks = self.track_publications();
         let mut vec = Vec::with_capacity(tracks.len());
 
         for p in tracks.values() {
@@ -194,10 +202,8 @@ impl LocalParticipant {
             }
             LocalTrack::Audio(_audio_track) => {
                 // Setup audio encoding
-                let audio_encoding = options
-                    .audio_encoding
-                    .as_ref()
-                    .unwrap_or(&options::audio::SPEECH.encoding);
+                let audio_encoding =
+                    options.audio_encoding.as_ref().unwrap_or(&options::audio::SPEECH.encoding);
 
                 encodings.push(RtpEncodingParameters {
                     max_bitrate: Some(audio_encoding.max_bitrate),
@@ -209,11 +215,8 @@ impl LocalParticipant {
         let publication = LocalTrackPublication::new(track_info.clone(), track.clone());
         track.update_info(track_info); // Update sid + source
 
-        let transceiver = self
-            .inner
-            .rtc_engine
-            .create_sender(track.clone(), options.clone(), encodings)
-            .await?;
+        let transceiver =
+            self.inner.rtc_engine.create_sender(track.clone(), options.clone(), encodings).await?;
 
         track.set_transceiver(Some(transceiver));
 
@@ -226,32 +229,50 @@ impl LocalParticipant {
         {
             local_track_published(self.clone(), publication.clone());
         }
-
         track.enable();
 
         Ok(publication)
     }
 
-    pub async fn update_metadata(&self, metadata: String) -> RoomResult<()> {
+    pub async fn set_metadata(&self, metadata: String) -> RoomResult<()> {
         self.inner
             .rtc_engine
             .send_request(proto::signal_request::Message::UpdateMetadata(
                 proto::UpdateParticipantMetadata {
                     metadata,
                     name: self.name(),
+                    attributes: Default::default(),
+                    ..Default::default()
                 },
             ))
             .await;
         Ok(())
     }
 
-    pub async fn update_name(&self, name: String) -> RoomResult<()> {
+    pub async fn set_attributes(&self, attributes: HashMap<String, String>) -> RoomResult<()> {
         self.inner
             .rtc_engine
             .send_request(proto::signal_request::Message::UpdateMetadata(
                 proto::UpdateParticipantMetadata {
+                    attributes,
                     metadata: self.metadata(),
+                    name: self.name(),
+                    ..Default::default()
+                },
+            ))
+            .await;
+        Ok(())
+    }
+
+    pub async fn set_name(&self, name: String) -> RoomResult<()> {
+        self.inner
+            .rtc_engine
+            .send_request(proto::signal_request::Message::UpdateMetadata(
+                proto::UpdateParticipantMetadata {
                     name,
+                    metadata: self.metadata(),
+                    attributes: Default::default(),
+                    ..Default::default()
                 },
             ))
             .await;
@@ -268,7 +289,7 @@ impl LocalParticipant {
             let track = publication.track().unwrap();
             let sender = track.transceiver().unwrap().sender();
 
-            self.inner.rtc_engine.remove_track(sender).await?;
+            self.inner.rtc_engine.remove_track(sender)?;
             track.set_transceiver(None);
 
             if let Some(local_track_unpublished) =
@@ -286,30 +307,78 @@ impl LocalParticipant {
         }
     }
 
-    pub async fn publish_data(
-        &self,
-        data: Vec<u8>,
-        kind: DataPacketKind,
-        destination_sids: Vec<String>,
-    ) -> RoomResult<()> {
+    pub async fn publish_data(&self, packet: DataPacket) -> RoomResult<()> {
+        let kind = match packet.reliable {
+            true => DataPacketKind::Reliable,
+            false => DataPacketKind::Lossy,
+        };
+        let destination_identities: Vec<String> =
+            packet.destination_identities.into_iter().map(Into::into).collect();
         let data = proto::DataPacket {
             kind: kind as i32,
+            destination_identities: destination_identities.clone(),
             value: Some(proto::data_packet::Value::User(proto::UserPacket {
-                payload: data,
-                destination_sids: destination_sids.to_owned(),
+                payload: packet.payload,
+                topic: packet.topic,
                 ..Default::default()
             })),
+            ..Default::default()
+        };
+
+        self.inner.rtc_engine.publish_data(&data, kind).await.map_err(Into::into)
+    }
+
+    pub async fn publish_transcription(&self, packet: Transcription) -> RoomResult<()> {
+        let segments: Vec<proto::TranscriptionSegment> = packet
+            .segments
+            .into_iter()
+            .map(
+                (|segment| proto::TranscriptionSegment {
+                    id: segment.id,
+                    start_time: segment.start_time,
+                    end_time: segment.end_time,
+                    text: segment.text,
+                    r#final: segment.r#final,
+                    language: segment.language,
+                }),
+            )
+            .collect();
+        let transcription_packet = proto::Transcription {
+            transcribed_participant_identity: packet.participant_identity,
+            segments: segments,
+            track_id: packet.track_id,
+        };
+        let data = proto::DataPacket {
+            value: Some(proto::data_packet::Value::Transcription(transcription_packet)),
+            ..Default::default()
+        };
+        self.inner
+            .rtc_engine
+            .publish_data(&data, DataPacketKind::Reliable)
+            .await
+            .map_err(Into::into)
+    }
+
+    pub async fn publish_dtmf(&self, dtmf: SipDTMF) -> RoomResult<()> {
+        let destination_identities: Vec<String> =
+            dtmf.destination_identities.into_iter().map(Into::into).collect();
+        let dtmf_message = proto::SipDtmf { code: dtmf.code, digit: dtmf.digit };
+
+        let data = proto::DataPacket {
+            value: Some(proto::data_packet::Value::SipDtmf(dtmf_message)),
+            destination_identities: destination_identities.clone(),
+            ..Default::default()
         };
 
         self.inner
             .rtc_engine
-            .publish_data(&data, kind)
+            .publish_data(&data, DataPacketKind::Reliable)
             .await
             .map_err(Into::into)
     }
 
     pub fn get_track_publication(&self, sid: &TrackSid) -> Option<LocalTrackPublication> {
-        self.inner.tracks.read().get(sid).map(|track| {
+        self.inner.track_publications.read().get(sid).map(|track| {
             if let TrackPublication::Local(local) = track {
                 return local.clone();
             }
@@ -334,13 +403,17 @@ impl LocalParticipant {
         self.inner.info.read().metadata.clone()
     }
 
+    pub fn attributes(&self) -> HashMap<String, String> {
+        self.inner.info.read().attributes.clone()
+    }
+
     pub fn is_speaking(&self) -> bool {
         self.inner.info.read().speaking
     }
 
-    pub fn tracks(&self) -> HashMap<TrackSid, LocalTrackPublication> {
+    pub fn track_publications(&self) -> HashMap<TrackSid, LocalTrackPublication> {
         self.inner
-            .tracks
+            .track_publications
             .read()
             .clone()
             .into_iter()

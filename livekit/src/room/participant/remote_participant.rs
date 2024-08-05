@@ -12,19 +12,20 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::TrackKind;
-use super::{ConnectionQuality, ParticipantInner};
-use crate::prelude::*;
-use crate::rtc_engine::RtcEngine;
-use crate::track::TrackError;
+use std::{
+    collections::{HashMap, HashSet},
+    fmt::Debug,
+    sync::Arc,
+    time::Duration,
+};
+
 use libwebrtc::prelude::*;
 use livekit_protocol as proto;
+use livekit_runtime::timeout;
 use parking_lot::Mutex;
-use std::collections::{HashMap, HashSet};
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
-use tokio::time::timeout;
+
+use super::{ConnectionQuality, ParticipantInner, TrackKind};
+use crate::{prelude::*, rtc_engine::RtcEngine, track::TrackError};
 
 const ADD_TRACK_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -73,19 +74,17 @@ impl RemoteParticipant {
         identity: ParticipantIdentity,
         name: String,
         metadata: String,
+        attributes: HashMap<String, String>,
         auto_subscribe: bool,
     ) -> Self {
         Self {
-            inner: super::new_inner(rtc_engine, sid, identity, name, metadata),
-            remote: Arc::new(RemoteInfo {
-                events: Default::default(),
-                auto_subscribe,
-            }),
+            inner: super::new_inner(rtc_engine, sid, identity, name, metadata, attributes),
+            remote: Arc::new(RemoteInfo { events: Default::default(), auto_subscribe }),
         }
     }
 
-    pub(crate) fn internal_tracks(&self) -> HashMap<TrackSid, TrackPublication> {
-        self.inner.tracks.read().clone()
+    pub(crate) fn internal_track_publications(&self) -> HashMap<TrackSid, TrackPublication> {
+        self.inner.track_publications.read().clone()
     }
 
     pub(crate) async fn add_subscribed_media_track(
@@ -104,7 +103,7 @@ impl RemoteParticipant {
                         return publication;
                     }
 
-                    tokio::time::sleep(Duration::from_millis(50)).await;
+                    livekit_runtime::sleep(Duration::from_millis(50)).await;
                 }
             }
         };
@@ -153,7 +152,8 @@ impl RemoteParticipant {
             self.add_publication(TrackPublication::Remote(remote_publication.clone()));
             track.enable();
 
-            remote_publication.set_track(Some(track)); // This will fire TrackSubscribed on the publication
+            remote_publication.set_track(Some(track)); // This will fire TrackSubscribed on the
+                                                       // publication
         } else {
             log::error!("could not find published track with sid: {:?}", sid);
 
@@ -186,11 +186,7 @@ impl RemoteParticipant {
     }
 
     pub(crate) fn update_info(&self, info: proto::ParticipantInfo) {
-        super::update_info(
-            &self.inner,
-            &Participant::Remote(self.clone()),
-            info.clone(),
-        );
+        super::update_info(&self.inner, &Participant::Remote(self.clone()), info.clone());
 
         let mut valid_tracks = HashSet::<TrackSid>::new();
         for track in info.tracks {
@@ -213,7 +209,7 @@ impl RemoteParticipant {
         }
 
         // remove tracks that are no longer valid
-        let tracks = self.inner.tracks.read().clone();
+        let tracks = self.inner.track_publications.read().clone();
         for sid in tracks.keys() {
             if valid_tracks.contains(sid) {
                 continue;
@@ -291,6 +287,13 @@ impl RemoteParticipant {
         super::on_name_changed(&self.inner, handler)
     }
 
+    pub(crate) fn on_attributes_changed(
+        &self,
+        handler: impl Fn(Participant, HashMap<String, String>) + Send + 'static,
+    ) {
+        super::on_attributes_changed(&self.inner, handler)
+    }
+
     pub(crate) fn set_speaking(&self, speaking: bool) {
         super::set_speaking(&self.inner, &Participant::Remote(self.clone()), speaking);
     }
@@ -320,7 +323,7 @@ impl RemoteParticipant {
             move |publication, subscribed| {
                 let rtc_engine = rtc_engine.clone();
                 let psid = psid.clone();
-                tokio::spawn(async move {
+                livekit_runtime::spawn(async move {
                     let tsid: String = publication.sid().into();
                     let update_subscription = proto::UpdateSubscription {
                         track_sids: vec![tsid.clone()],
@@ -359,6 +362,30 @@ impl RemoteParticipant {
                 }
             }
         });
+
+        publication.on_enabled_status_changed({
+            let rtc_engine = self.inner.rtc_engine.clone();
+            move |publication, enabled| {
+                let rtc_engine = rtc_engine.clone();
+                livekit_runtime::spawn(async move {
+                    let tsid: String = publication.sid().into();
+                    let TrackDimension(width, height) = publication.dimension();
+                    let update_track_settings = proto::UpdateTrackSettings {
+                        track_sids: vec![tsid.clone()],
+                        disabled: !enabled,
+                        width,
+                        height,
+                        ..Default::default()
+                    };
+
+                    rtc_engine
+                        .send_request(proto::signal_request::Message::TrackSetting(
+                            update_track_settings,
+                        ))
+                        .await
+                });
+            }
+        })
     }
 
     pub(crate) fn remove_publication(&self, sid: &TrackSid) -> Option<TrackPublication> {
@@ -379,7 +406,7 @@ impl RemoteParticipant {
     }
 
     pub fn get_track_publication(&self, sid: &TrackSid) -> Option<RemoteTrackPublication> {
-        self.inner.tracks.read().get(sid).map(|track| {
+        self.inner.track_publications.read().get(sid).map(|track| {
             if let TrackPublication::Remote(remote) = track {
                 return remote.clone();
             }
@@ -403,13 +430,17 @@ impl RemoteParticipant {
         self.inner.info.read().metadata.clone()
     }
 
+    pub fn attributes(&self) -> HashMap<String, String> {
+        self.inner.info.read().attributes.clone()
+    }
+
     pub fn is_speaking(&self) -> bool {
         self.inner.info.read().speaking
     }
 
-    pub fn tracks(&self) -> HashMap<TrackSid, RemoteTrackPublication> {
+    pub fn track_publications(&self) -> HashMap<TrackSid, RemoteTrackPublication> {
         self.inner
-            .tracks
+            .track_publications
             .read()
             .clone()
             .into_iter()

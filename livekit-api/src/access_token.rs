@@ -12,15 +12,18 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::get_env_keys;
+use std::{
+    env,
+    fmt::Debug,
+    ops::Add,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
+
 use jsonwebtoken::{self, DecodingKey, EncodingKey, Header};
 use serde::{Deserialize, Serialize};
-use std::env;
-use std::fmt::Debug;
-use std::ops::Add;
-use std::time::Duration;
-use std::time::{SystemTime, UNIX_EPOCH};
 use thiserror::Error;
+
+use crate::get_env_keys;
 
 pub const DEFAULT_TTL: Duration = Duration::from_secs(3600 * 6); // 6 hours
 
@@ -92,6 +95,21 @@ impl Default for VideoGrants {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SIPGrants {
+    // manage sip resources
+    pub admin: bool,
+    // make outbound calls
+    pub call: bool,
+}
+
+impl Default for SIPGrants {
+    fn default() -> Self {
+        Self { admin: false, call: false }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Default, Deserialize)]
 #[serde(default)]
 #[serde(rename_all = "camelCase")]
@@ -103,6 +121,7 @@ pub struct Claims {
 
     pub name: String,
     pub video: VideoGrants,
+    pub sip: SIPGrants,
     pub sha256: String, // Used to verify the integrity of the message body
     pub metadata: String,
 }
@@ -137,6 +156,7 @@ impl AccessToken {
                 sub: Default::default(),
                 name: Default::default(),
                 video: VideoGrants::default(),
+                sip: SIPGrants::default(),
                 sha256: Default::default(),
                 metadata: Default::default(),
             },
@@ -156,6 +176,11 @@ impl AccessToken {
 
     pub fn with_grants(mut self, grants: VideoGrants) -> Self {
         self.claims.video = grants;
+        self
+    }
+
+    pub fn with_sip_grants(mut self, grants: SIPGrants) -> Self {
+        self.claims.sip = grants;
         self
     }
 
@@ -184,9 +209,11 @@ impl AccessToken {
             return Err(AccessTokenError::InvalidKeys);
         }
 
-        if self.claims.video.room_join && self.claims.sub.is_empty() {
+        if self.claims.video.room_join
+            && (self.claims.sub.is_empty() || self.claims.video.room.is_empty())
+        {
             return Err(AccessTokenError::InvalidClaims(
-                "token grants room_join but doesn't have an identity",
+                "token grants room_join but doesn't have an identity or room",
             ));
         }
 
@@ -206,18 +233,13 @@ pub struct TokenVerifier {
 
 impl Debug for TokenVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TokenVerifier")
-            .field("api_key", &self.api_key)
-            .finish()
+        f.debug_struct("TokenVerifier").field("api_key", &self.api_key).finish()
     }
 }
 
 impl TokenVerifier {
     pub fn with_api_key(api_key: &str, api_secret: &str) -> Self {
-        Self {
-            api_key: api_key.to_owned(),
-            api_secret: api_secret.to_owned(),
-        }
+        Self { api_key: api_key.to_owned(), api_secret: api_secret.to_owned() }
     }
 
     pub fn new() -> Result<Self, AccessTokenError> {
@@ -243,8 +265,9 @@ impl TokenVerifier {
 
 #[cfg(test)]
 mod tests {
-    use super::{AccessToken, TokenVerifier, VideoGrants};
     use std::time::Duration;
+
+    use super::{AccessToken, TokenVerifier, VideoGrants};
 
     const TEST_API_KEY: &str = "myapikey";
     const TEST_API_SECRET: &str = "thiskeyistotallyunsafe";

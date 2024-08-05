@@ -12,15 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::TrackPublicationInner;
-use crate::e2ee::EncryptionType;
-use crate::options::TrackPublishOptions;
-use crate::prelude::*;
+use std::{fmt::Debug, sync::Arc};
 
 use livekit_protocol as proto;
 use parking_lot::Mutex;
-use std::fmt::Debug;
-use std::sync::Arc;
+
+use super::TrackPublicationInner;
+use crate::{e2ee::EncryptionType, options::TrackPublishOptions, prelude::*};
 
 #[derive(Default)]
 struct LocalInfo {
@@ -84,11 +82,19 @@ impl LocalTrackPublication {
         if let Some(track) = self.track() {
             track.mute();
         }
+
+        if let Some(mute_update_needed) = self.inner.events.muted.lock().as_ref() {
+            mute_update_needed(TrackPublication::Local(self.clone()))
+        }
     }
 
     pub fn unmute(&self) {
         if let Some(track) = self.track() {
             track.unmute();
+        }
+
+        if let Some(unmute_update_needed) = self.inner.events.unmuted.lock().as_ref() {
+            unmute_update_needed(TrackPublication::Local(self.clone()))
         }
     }
 
@@ -117,12 +123,7 @@ impl LocalTrackPublication {
     }
 
     pub fn track(&self) -> Option<LocalTrack> {
-        self.inner
-            .info
-            .read()
-            .track
-            .clone()
-            .map(|track| track.try_into().unwrap())
+        self.inner.info.read().track.clone().map(|track| track.try_into().unwrap())
     }
 
     pub fn mime_type(&self) -> String {

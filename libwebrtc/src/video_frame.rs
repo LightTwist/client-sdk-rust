@@ -12,9 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::imp::video_frame as vf_imp;
 use std::fmt::Debug;
+
 use thiserror::Error;
+
+use crate::imp::video_frame as vf_imp;
 
 #[derive(Debug, Error)]
 pub enum SinkError {
@@ -40,7 +42,7 @@ pub enum VideoFormatType {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum VideoFrameBufferType {
+pub enum VideoBufferType {
     Native,
     I420,
     I420A,
@@ -53,15 +55,15 @@ pub enum VideoFrameBufferType {
 #[derive(Debug)]
 pub struct VideoFrame<T>
 where
-    T: AsRef<dyn VideoFrameBuffer>,
+    T: AsRef<dyn VideoBuffer>,
 {
     pub rotation: VideoRotation,
     pub timestamp_us: i64, // When the frame was captured in microseconds
     pub buffer: T,
 }
 
-pub type BoxVideoFrameBuffer = Box<dyn VideoFrameBuffer>;
-pub type BoxVideoFrame = VideoFrame<BoxVideoFrameBuffer>;
+pub type BoxVideoBuffer = Box<dyn VideoBuffer>;
+pub type BoxVideoFrame = VideoFrame<BoxVideoBuffer>;
 
 pub(crate) mod internal {
     use super::{I420Buffer, VideoFormatType};
@@ -85,10 +87,10 @@ pub(crate) mod internal {
     }
 }
 
-pub trait VideoFrameBuffer: internal::BufferSealed + Debug {
+pub trait VideoBuffer: internal::BufferSealed + Debug {
     fn width(&self) -> u32;
     fn height(&self) -> u32;
-    fn buffer_type(&self) -> VideoFrameBufferType;
+    fn buffer_type(&self) -> VideoBufferType;
 
     #[cfg(not(target_arch = "wasm32"))]
     fn as_native(&self) -> Option<&native::NativeBuffer> {
@@ -134,9 +136,7 @@ macro_rules! new_buffer_type {
 
             #[cfg(not(target_arch = "wasm32"))]
             fn to_i420(&self) -> I420Buffer {
-                I420Buffer {
-                    handle: self.handle.to_i420(),
-                }
+                I420Buffer { handle: self.handle.to_i420() }
             }
 
             #[cfg(not(target_arch = "wasm32"))]
@@ -152,7 +152,7 @@ macro_rules! new_buffer_type {
             }
         }
 
-        impl VideoFrameBuffer for $type {
+        impl VideoBuffer for $type {
             fn width(&self) -> u32 {
                 self.handle.width()
             }
@@ -161,8 +161,8 @@ macro_rules! new_buffer_type {
                 self.handle.height()
             }
 
-            fn buffer_type(&self) -> VideoFrameBufferType {
-                VideoFrameBufferType::$variant
+            fn buffer_type(&self) -> VideoBufferType {
+                VideoBufferType::$variant
             }
 
             fn $as(&self) -> Option<&$type> {
@@ -179,8 +179,8 @@ macro_rules! new_buffer_type {
             }
         }
 
-        impl AsRef<dyn VideoFrameBuffer> for $type {
-            fn as_ref(&self) -> &(dyn VideoFrameBuffer + 'static) {
+        impl AsRef<dyn VideoBuffer> for $type {
+            fn as_ref(&self) -> &(dyn VideoBuffer + 'static) {
                 self
             }
         }
@@ -195,8 +195,18 @@ new_buffer_type!(I010Buffer, I010, as_i010);
 new_buffer_type!(NV12Buffer, NV12, as_nv12);
 
 impl I420Buffer {
-    pub fn new(width: u32, height: u32, stride_y: u32, stride_u: u32, stride_v: u32) -> I420Buffer {
+    pub fn with_strides(
+        width: u32,
+        height: u32,
+        stride_y: u32,
+        stride_u: u32,
+        stride_v: u32,
+    ) -> I420Buffer {
         vf_imp::I420Buffer::new(width, height, stride_y, stride_u, stride_v)
+    }
+
+    pub fn new(width: u32, height: u32) -> I420Buffer {
+        Self::with_strides(width, height, width, (width + 1) / 2, (width + 1) / 2)
     }
 
     pub fn chroma_width(&self) -> u32 {
@@ -208,11 +218,7 @@ impl I420Buffer {
     }
 
     pub fn strides(&self) -> (u32, u32, u32) {
-        (
-            self.handle.stride_y(),
-            self.handle.stride_u(),
-            self.handle.stride_v(),
-        )
+        (self.handle.stride_y(), self.handle.stride_u(), self.handle.stride_v())
     }
 
     pub fn data(&self) -> (&[u8], &[u8], &[u8]) {
@@ -271,8 +277,18 @@ impl I420ABuffer {
 }
 
 impl I422Buffer {
-    pub fn new(width: u32, height: u32, stride_y: u32, stride_u: u32, stride_v: u32) -> I422Buffer {
+    pub fn with_strides(
+        width: u32,
+        height: u32,
+        stride_y: u32,
+        stride_u: u32,
+        stride_v: u32,
+    ) -> I422Buffer {
         vf_imp::I422Buffer::new(width, height, stride_y, stride_u, stride_v)
+    }
+
+    pub fn new(width: u32, height: u32) -> I422Buffer {
+        Self::with_strides(width, height, width, (width + 1) / 2, (width + 1) / 2)
     }
 
     pub fn chroma_width(&self) -> u32 {
@@ -284,11 +300,7 @@ impl I422Buffer {
     }
 
     pub fn strides(&self) -> (u32, u32, u32) {
-        (
-            self.handle.stride_y(),
-            self.handle.stride_u(),
-            self.handle.stride_v(),
-        )
+        (self.handle.stride_y(), self.handle.stride_u(), self.handle.stride_v())
     }
 
     pub fn data(&self) -> (&[u8], &[u8], &[u8]) {
@@ -308,8 +320,18 @@ impl I422Buffer {
 }
 
 impl I444Buffer {
-    pub fn new(width: u32, height: u32, stride_y: u32, stride_u: u32, stride_v: u32) -> I444Buffer {
+    pub fn with_strides(
+        width: u32,
+        height: u32,
+        stride_y: u32,
+        stride_u: u32,
+        stride_v: u32,
+    ) -> I444Buffer {
         vf_imp::I444Buffer::new(width, height, stride_y, stride_u, stride_v)
+    }
+
+    pub fn new(width: u32, height: u32) -> I444Buffer {
+        Self::with_strides(width, height, width, width, width)
     }
 
     pub fn chroma_width(&self) -> u32 {
@@ -321,11 +343,7 @@ impl I444Buffer {
     }
 
     pub fn strides(&self) -> (u32, u32, u32) {
-        (
-            self.handle.stride_y(),
-            self.handle.stride_u(),
-            self.handle.stride_v(),
-        )
+        (self.handle.stride_y(), self.handle.stride_u(), self.handle.stride_v())
     }
 
     pub fn data(&self) -> (&[u8], &[u8], &[u8]) {
@@ -345,8 +363,18 @@ impl I444Buffer {
 }
 
 impl I010Buffer {
-    pub fn new(width: u32, height: u32, stride_y: u32, stride_u: u32, stride_v: u32) -> I010Buffer {
+    pub fn with_strides(
+        width: u32,
+        height: u32,
+        stride_y: u32,
+        stride_u: u32,
+        stride_v: u32,
+    ) -> I010Buffer {
         vf_imp::I010Buffer::new(width, height, stride_y, stride_u, stride_v)
+    }
+
+    pub fn new(width: u32, height: u32) -> I010Buffer {
+        Self::with_strides(width, height, width, (width + 1) / 2, (width + 1) / 2)
     }
 
     pub fn chroma_width(&self) -> u32 {
@@ -358,11 +386,7 @@ impl I010Buffer {
     }
 
     pub fn strides(&self) -> (u32, u32, u32) {
-        (
-            self.handle.stride_y(),
-            self.handle.stride_u(),
-            self.handle.stride_v(),
-        )
+        (self.handle.stride_y(), self.handle.stride_u(), self.handle.stride_v())
     }
 
     pub fn data(&self) -> (&[u16], &[u16], &[u16]) {
@@ -382,8 +406,12 @@ impl I010Buffer {
 }
 
 impl NV12Buffer {
-    pub fn new(width: u32, height: u32, stride_y: u32, stride_uv: u32) -> NV12Buffer {
+    pub fn with_strides(width: u32, height: u32, stride_y: u32, stride_uv: u32) -> NV12Buffer {
         vf_imp::NV12Buffer::new(width, height, stride_y, stride_uv)
+    }
+
+    pub fn new(width: u32, height: u32) -> NV12Buffer {
+        Self::with_strides(width, height, width, width + width % 2)
     }
 
     pub fn chroma_width(&self) -> u32 {
@@ -415,12 +443,34 @@ impl NV12Buffer {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native {
-    use super::{vf_imp, I420Buffer, VideoFormatType, VideoFrameBuffer, VideoFrameBufferType};
     use std::fmt::Debug;
+
+    use super::{vf_imp, I420Buffer, VideoBuffer, VideoBufferType, VideoFormatType};
 
     new_buffer_type!(NativeBuffer, Native, as_native);
 
-    pub trait VideoFrameBufferExt: VideoFrameBuffer {
+    impl NativeBuffer {
+        /// Creates a `NativeBuffer` from a `CVPixelBufferRef` pointer.
+        ///
+        /// This function does not bump the reference count of the pixel buffer.
+        ///
+        /// Safety: The given pointer must be a valid `CVPixelBufferRef`.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        pub unsafe fn from_cv_pixel_buffer(cv_pixel_buffer: *mut std::ffi::c_void) -> Self {
+            vf_imp::NativeBuffer::from_cv_pixel_buffer(cv_pixel_buffer)
+        }
+
+        /// Returns the `CVPixelBufferRef` that backs this buffer, or `null` if
+        /// this buffer is not currently backed by a `CVPixelBufferRef`.
+        ///
+        /// This function does not bump the reference count of the pixel buffer.
+        #[cfg(any(target_os = "macos", target_os = "ios"))]
+        pub fn get_cv_pixel_buffer(&self) -> *mut std::ffi::c_void {
+            self.handle.get_cv_pixel_buffer()
+        }
+    }
+
+    pub trait VideoFrameBufferExt: VideoBuffer {
         fn to_i420(&self) -> I420Buffer;
         fn to_argb(
             &self,
@@ -432,7 +482,7 @@ pub mod native {
         );
     }
 
-    impl<T: VideoFrameBuffer> VideoFrameBufferExt for T {
+    impl<T: VideoBuffer> VideoFrameBufferExt for T {
         fn to_i420(&self) -> I420Buffer {
             self.to_i420()
         }

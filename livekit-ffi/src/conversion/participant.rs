@@ -12,8 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::proto;
-use crate::server::room::FfiParticipant;
+use crate::{proto, server::room::FfiParticipant};
 
 impl From<&FfiParticipant> for proto::ParticipantInfo {
     fn from(value: &FfiParticipant) -> Self {
@@ -23,6 +22,7 @@ impl From<&FfiParticipant> for proto::ParticipantInfo {
             name: participant.name(),
             identity: participant.identity().into(),
             metadata: participant.metadata(),
+            attributes: participant.attributes(),
         }
     }
 }

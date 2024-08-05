@@ -18,6 +18,7 @@ pub mod audio_resampler;
 pub mod audio_track;
 pub mod candidate;
 pub mod data_channel;
+pub mod frame_cryptor;
 pub mod helper;
 pub mod jsep;
 pub mod media_stream;
@@ -38,7 +39,6 @@ pub mod frame_transformer;
 pub mod encoded_video_frame;
 pub mod encoded_audio_frame;
 pub mod sender_report;
-pub mod frame_cryptor;
 
 pub const MEDIA_TYPE_VIDEO: &str = "video";
 pub const MEDIA_TYPE_AUDIO: &str = "audio";

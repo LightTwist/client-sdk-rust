@@ -12,14 +12,16 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::prelude::*;
 use libwebrtc::prelude::*;
 use livekit_protocol as proto;
+
+use crate::prelude::*;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum VideoCodec {
     VP8,
     H264,
+    VP9,
     AV1,
 }
 
@@ -28,6 +30,7 @@ impl VideoCodec {
         match self {
             VideoCodec::VP8 => "vp8",
             VideoCodec::H264 => "h264",
+            VideoCodec::VP9 => "vp9",
             VideoCodec::AV1 => "av1",
         }
     }
@@ -66,9 +69,7 @@ pub struct AudioPreset {
 
 impl AudioPreset {
     pub const fn new(max_bitrate: u64) -> Self {
-        Self {
-            encoding: AudioEncoding { max_bitrate },
-        }
+        Self { encoding: AudioEncoding { max_bitrate } }
     }
 }
 
@@ -101,14 +102,7 @@ impl Default for TrackPublishOptions {
 
 impl VideoPreset {
     pub const fn new(width: u32, height: u32, max_bitrate: u64, max_framerate: f64) -> Self {
-        Self {
-            width,
-            height,
-            encoding: VideoEncoding {
-                max_bitrate,
-                max_framerate,
-            },
-        }
+        Self { width, height, encoding: VideoEncoding { max_bitrate, max_framerate } }
     }
 
     pub fn resolution(&self) -> VideoResolution {
@@ -129,7 +123,10 @@ pub fn compute_video_encodings(
     options: &TrackPublishOptions,
 ) -> Vec<RtpEncodingParameters> {
     let screenshare = options.source == TrackSource::Screenshare;
-    let encoding = compute_appropriate_encoding(screenshare, width, height);
+    let encoding = match options.video_encoding.clone() {
+        Some(encoding) => encoding,
+        None => compute_appropriate_encoding(screenshare, width, height, options.video_codec),
+    };
 
     let initial_preset = VideoPreset {
         width,
@@ -171,17 +168,27 @@ pub fn compute_appropriate_encoding(
     is_screenshare: bool,
     width: u32,
     height: u32,
+    codec: VideoCodec,
 ) -> VideoEncoding {
     let presets = compute_presets_for_resolution(is_screenshare, width, height);
     let size = u32::max(width, height);
 
+    let mut encoding = presets.first().unwrap().encoding.clone();
+
     for preset in presets {
+        encoding = preset.encoding.clone();
         if preset.width >= size {
-            return preset.encoding.clone();
+            break;
         }
     }
 
-    unreachable!()
+    match codec {
+        VideoCodec::VP9 => encoding.max_bitrate = (encoding.max_bitrate as f32 * 0.85) as u64,
+        VideoCodec::AV1 => encoding.max_bitrate = (encoding.max_bitrate as f32 * 0.7) as u64,
+        _ => {}
+    }
+
+    encoding
 }
 
 pub fn compute_presets_for_resolution(
@@ -304,14 +311,8 @@ pub mod audio {
     pub const MUSIC_HIGH_QUALITY: AudioPreset = AudioPreset::new(64_000);
     pub const MUSIC_HIGH_QUALITY_STEREO: AudioPreset = AudioPreset::new(96_000);
 
-    pub const PRESETS: &[AudioPreset] = &[
-        TELEPHONE,
-        SPEECH,
-        MUSIC,
-        MUSIC_STEREO,
-        MUSIC_HIGH_QUALITY,
-        MUSIC_HIGH_QUALITY_STEREO,
-    ];
+    pub const PRESETS: &[AudioPreset] =
+        &[TELEPHONE, SPEECH, MUSIC, MUSIC_STEREO, MUSIC_HIGH_QUALITY, MUSIC_HIGH_QUALITY_STEREO];
 }
 
 pub mod video {

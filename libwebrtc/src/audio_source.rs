@@ -12,8 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::imp::audio_source as imp_as;
 use livekit_protocol::enum_dispatch;
+
+use crate::imp::audio_source as imp_as;
 
 #[derive(Default, Debug)]
 pub struct AudioSourceOptions {
@@ -34,14 +35,17 @@ impl RtcAudioSource {
         [Native];
         fn set_audio_options(self: &Self, options: AudioSourceOptions) -> ();
         fn audio_options(self: &Self) -> AudioSourceOptions;
+        fn sample_rate(self: &Self) -> u32;
+        fn num_channels(self: &Self) -> u32;
     );
 }
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native {
+    use std::fmt::{Debug, Formatter};
+
     use super::*;
     use crate::{audio_frame::AudioFrame, RtcError};
-    use std::fmt::{Debug, Formatter};
 
     #[derive(Clone)]
     pub struct NativeAudioSource {
@@ -59,9 +63,15 @@ pub mod native {
             options: AudioSourceOptions,
             sample_rate: u32,
             num_channels: u32,
+            enable_queue: Option<bool>,
         ) -> NativeAudioSource {
             Self {
-                handle: imp_as::NativeAudioSource::new(options, sample_rate, num_channels),
+                handle: imp_as::NativeAudioSource::new(
+                    options,
+                    sample_rate,
+                    num_channels,
+                    enable_queue,
+                ),
             }
         }
 
@@ -83,6 +93,10 @@ pub mod native {
 
         pub fn num_channels(&self) -> u32 {
             self.handle.num_channels()
+        }
+
+        pub fn enable_queue(&self) -> bool {
+            self.handle.enable_queue()
         }
     }
 }

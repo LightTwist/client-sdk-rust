@@ -1,4 +1,5 @@
-use livekit::{prelude::*, options::video};
+use livekit::prelude::*;
+use livekit_api::access_token;
 use std::env;
 use futures::StreamExt;
 use livekit::webrtc::video_stream::native::NativeVideoStream;
@@ -16,14 +17,20 @@ async fn main() {
     // let url = env::var("LIVEKIT_URL").expect("LIVEKIT_URL is not set");
     // let token = env::var("LIVEKIT_TOKEN").expect("LIVEKIT_TOKEN is not set");
 
-    let url: &str = "wss://lighttwist.livekit.cloud";
-    // cyberpunk 573ae795-c53f-47dd-a195-ab11148f9416
-    //let token : &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MTM5MDU4OTYsImlzcyI6IkFQSU5YTVNtTDlWUjVxNiIsIm5hbWUiOiJ1c2VyIiwibmJmIjoxNjg1MTA1ODk2LCJzdWIiOiJ1c2VyIiwidmlkZW8iOnsicm9vbSI6IjU3M2FlNzk1LWM1M2YtNDdkZC1hMTk1LWFiMTExNDhmOTQxNiIsInJvb21Kb2luIjp0cnVlfX0.yHlsWep5RN-JjZJMtZ_iZRA7sVnq2RfJLLFRge0bUEQ";
+    let url = env::var("LIVEKIT_URL").expect("LIVEKIT_URL is not set");
+    let api_key = env::var("LIVEKIT_API_KEY").expect("LIVEKIT_API_KEY is not set");
+    let api_secret = env::var("LIVEKIT_API_SECRET").expect("LIVEKIT_API_SECRET is not set");
 
-    // b8239902
-    let token : &str = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJleHAiOjE3MTQ4NDM5NDEsImlzcyI6IkFQSU5YTVNtTDlWUjVxNiIsIm5hbWUiOiJ1c2VyIiwibmJmIjoxNjg2MDQzOTQxLCJzdWIiOiJ1c2VyIiwidmlkZW8iOnsicm9vbSI6ImI4MzI5OTAyLTJmNjMtNGM2Ny04MzNlLTA4MWE5NmY2MmVkMyIsInJvb21Kb2luIjp0cnVlfX0.NOjND8jsn7LM7_UGRqZWLWzqK6HAqcD4ncTIGkf6I5U";
-
-    
+    let token = access_token::AccessToken::with_api_key(&api_key, &api_secret)
+        .with_identity("rust-bot")
+        .with_name("Rust Bot")
+        .with_grants(access_token::VideoGrants {
+            room_join: true,
+            room: "my-room".to_string(),
+            ..Default::default()
+        })
+        .to_jwt()
+        .unwrap();
 
     let (room, mut rx) = Room::connect(&url, &token, RoomOptions::default())
         .await
@@ -32,11 +39,11 @@ async fn main() {
 
 
     room.local_participant()
-        .publish_data(
-            "Hello world".to_owned().into_bytes(),
-            DataPacketKind::Reliable,
-            Default::default(),
-        )
+        .publish_data(DataPacket {
+            payload: "Hello world".to_owned().into_bytes(),
+            kind: DataPacketKind::Reliable,
+            ..Default::default()
+        })
         .await
         .unwrap();
 

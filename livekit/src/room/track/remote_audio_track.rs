@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::{fmt::Debug, sync::Arc};
+
+use libwebrtc::{prelude::*, stats::RtcStats};
+use livekit_protocol as proto;
+
 use super::{remote_track, TrackInner};
 use crate::prelude::*;
-use libwebrtc::prelude::*;
-use livekit_protocol as proto;
-use std::fmt::Debug;
-use std::sync::Arc;
 
 #[derive(Clone)]
 pub struct RemoteAudioTrack {
@@ -72,6 +73,10 @@ impl RemoteAudioTrack {
         self.inner.info.read().stream_state
     }
 
+    pub fn is_enabled(&self) -> bool {
+        self.inner.rtc_track.enabled()
+    }
+
     pub fn enable(&self) {
         self.inner.rtc_track.set_enabled(true);
     }
@@ -95,12 +100,16 @@ impl RemoteAudioTrack {
         true
     }
 
-    pub fn on_muted(&self, f: impl Fn(Track) + Send + 'static) {
-        *self.inner.events.muted.lock() = Some(Box::new(f));
+    pub async fn get_stats(&self) -> RoomResult<Vec<RtcStats>> {
+        super::remote_track::get_stats(&self.inner).await
     }
 
-    pub fn on_unmuted(&self, f: impl Fn(Track) + Send + 'static) {
-        *self.inner.events.unmuted.lock() = Some(Box::new(f));
+    pub(crate) fn on_muted(&self, f: impl Fn(Track) + Send + 'static) {
+        self.inner.events.lock().muted.replace(Box::new(f));
+    }
+
+    pub(crate) fn on_unmuted(&self, f: impl Fn(Track) + Send + 'static) {
+        self.inner.events.lock().unmuted.replace(Box::new(f));
     }
 
     #[allow(dead_code)]

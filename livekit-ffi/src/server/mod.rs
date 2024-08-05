@@ -12,23 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::{proto, FfiCallbackFn, INVALID_HANDLE};
-use crate::{FfiError, FfiHandleId, FfiResult};
-use dashmap::mapref::one::MappedRef;
-use dashmap::DashMap;
+use std::{
+    error::Error,
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc,
+    },
+    thread,
+    time::Duration,
+};
+
+use dashmap::{mapref::one::MappedRef, DashMap};
 use downcast_rs::{impl_downcast, Downcast};
-use livekit::webrtc::native::audio_resampler::AudioResampler;
-use livekit::webrtc::prelude::*;
-use parking_lot::deadlock;
-use parking_lot::Mutex;
-use prost::Message;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use std::thread;
-use std::time::Duration;
+use livekit::webrtc::{native::audio_resampler::AudioResampler, prelude::*};
+use parking_lot::{deadlock, Mutex};
+use tokio::task::JoinHandle;
+
+use crate::{proto, proto::FfiEvent, FfiError, FfiHandleId, FfiResult, INVALID_HANDLE};
 
 pub mod audio_source;
 pub mod audio_stream;
+pub mod colorcvt;
+pub mod logger;
 pub mod requests;
 pub mod room;
 pub mod video_source;
@@ -37,8 +42,10 @@ pub mod video_stream;
 //#[cfg(test)]
 //mod tests;
 
+#[derive(Clone)]
 pub struct FfiConfig {
-    callback_fn: FfiCallbackFn,
+    pub callback_fn: Arc<dyn Fn(FfiEvent) + Send + Sync>,
+    pub capture_logs: bool,
 }
 
 /// To make sure we use the right types, only types that implement this trait
@@ -53,11 +60,10 @@ pub struct FfiDataBuffer {
 }
 
 impl FfiHandle for FfiDataBuffer {}
-
-// TODO(theomonnom) Wrap these types
 impl FfiHandle for Arc<Mutex<AudioResampler>> {}
 impl FfiHandle for AudioFrame<'static> {}
-impl FfiHandle for BoxVideoFrameBuffer {}
+impl FfiHandle for BoxVideoBuffer {}
+impl FfiHandle for Box<[u8]> {}
 
 pub struct FfiServer {
     /// Store all Ffi handles inside an HashMap, if this isn't efficient enough
@@ -67,11 +73,17 @@ pub struct FfiServer {
 
     next_id: AtomicU64,
     config: Mutex<Option<FfiConfig>>,
+    logger: &'static logger::FfiLogger,
 }
 
 impl Default for FfiServer {
     fn default() -> Self {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+        let async_runtime =
+            tokio::runtime::Builder::new_multi_thread().enable_all().build().unwrap();
+
+        let logger = Box::leak(Box::new(logger::FfiLogger::new(async_runtime.handle().clone())));
+        log::set_logger(logger).unwrap();
+        log::set_max_level(log::LevelFilter::Trace);
 
         #[cfg(feature = "tracing")]
         console_subscriber::init();
@@ -96,11 +108,9 @@ impl Default for FfiServer {
         Self {
             ffi_handles: Default::default(),
             next_id: AtomicU64::new(1), // 0 is invalid
-            async_runtime: tokio::runtime::Builder::new_multi_thread()
-                .enable_all()
-                .build()
-                .unwrap(),
+            async_runtime,
             config: Default::default(),
+            logger,
         }
     }
 }
@@ -108,6 +118,13 @@ impl Default for FfiServer {
 // Using &'static self inside the implementation, not sure if this is really idiomatic
 // It simplifies the code a lot tho. In most cases the server is used until the end of the process
 impl FfiServer {
+    pub fn setup(&self, config: FfiConfig) {
+        *self.config.lock() = Some(config.clone());
+        self.logger.set_capture_logs(config.capture_logs);
+
+        log::info!("initializing ffi server v{}", env!("CARGO_PKG_VERSION")); // TODO: Move this log
+    }
+
     pub async fn dispose(&self) {
         log::info!("disposing the FfiServer, closing all rooms...");
 
@@ -128,29 +145,14 @@ impl FfiServer {
         *self.config.lock() = None; // Invalidate the config
     }
 
-    pub async fn send_event(&self, message: proto::ffi_event::Message) -> FfiResult<()> {
-        let callback_fn = self
+    pub fn send_event(&self, message: proto::ffi_event::Message) -> FfiResult<()> {
+        let cb = self
             .config
             .lock()
             .as_ref()
-            .map_or_else(|| Err(FfiError::NotConfigured), |c| Ok(c.callback_fn))?;
+            .map_or_else(|| Err(FfiError::NotConfigured), |c| Ok(c.callback_fn.clone()))?;
 
-        let message = proto::FfiEvent {
-            message: Some(message),
-        }
-        .encode_to_vec();
-
-        let cb_task = self.async_runtime.spawn_blocking(move || unsafe {
-            callback_fn(message.as_ptr(), message.len());
-        });
-
-        tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(2)) => {
-                log::error!("sending an event to the foreign language took too much time, is your callback function blocking?");
-            }
-            _ = cb_task => {}
-        }
-
+        cb(proto::FfiEvent { message: Some(message) });
         Ok(())
     }
 
@@ -176,10 +178,8 @@ impl FfiServer {
             return Err(FfiError::InvalidRequest("handle is invalid".into()));
         }
 
-        let handle = self
-            .ffi_handles
-            .get(&id)
-            .ok_or(FfiError::InvalidRequest("handle not found".into()))?;
+        let handle =
+            self.ffi_handles.get(&id).ok_or(FfiError::InvalidRequest("handle not found".into()))?;
 
         if !handle.is::<T>() {
             let tyname = std::any::type_name::<T>();
@@ -193,5 +193,30 @@ impl FfiServer {
 
     pub fn drop_handle(&self, id: FfiHandleId) -> bool {
         self.ffi_handles.remove(&id).is_some()
+    }
+
+    pub fn send_panic(&self, err: Box<dyn Error>) {
+        let _ = self.send_event(proto::ffi_event::Message::Panic(proto::Panic {
+            message: err.as_ref().to_string(),
+        }));
+    }
+
+    pub fn watch_panic<O>(&'static self, handle: JoinHandle<O>) -> JoinHandle<O>
+    where
+        O: Send + 'static,
+    {
+        let handle = self.async_runtime.spawn(async move {
+            match handle.await {
+                Ok(r) => r,
+                Err(e) => {
+                    // Forward the panic to the client
+                    // Recommended behaviour is to exit the process
+                    log::error!("task panicked: {:?}", e);
+                    self.send_panic(Box::new(e));
+                    panic!("watch_panic: task panicked");
+                }
+            }
+        });
+        handle
     }
 }

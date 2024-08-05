@@ -12,28 +12,33 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use crate::id::ParticipantSid;
-use crate::options::TrackPublishOptions;
-use crate::prelude::LocalTrack;
-use crate::room::DisconnectReason;
-use crate::rtc_engine::lk_runtime::LkRuntime;
-use crate::rtc_engine::rtc_session::{RtcSession, SessionEvent, SessionEvents};
-use crate::DataPacketKind;
+use std::{borrow::Cow, fmt::Debug, sync::Arc, time::Duration};
+
 use libwebrtc::prelude::*;
 use livekit_api::signal_client::{SignalError, SignalOptions};
 use livekit_protocol as proto;
-use parking_lot::RwLock;
-use parking_lot::RwLockReadGuard;
-use std::borrow::Cow;
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::time::Duration;
+use livekit_runtime::{interval, Interval, JoinHandle};
+use parking_lot::{RwLock, RwLockReadGuard};
 use thiserror::Error;
-use tokio::sync::{mpsc, oneshot};
-use tokio::sync::{Mutex as AsyncMutex, Notify};
-use tokio::sync::{RwLock as AsyncRwLock, RwLockReadGuard as AsyncRwLockReadGuard};
-use tokio::task::JoinHandle;
-use tokio::time::{interval, Interval};
+use tokio::sync::{
+    mpsc, oneshot, Mutex as AsyncMutex, Notify, RwLock as AsyncRwLock,
+    RwLockReadGuard as AsyncRwLockReadGuard,
+};
+
+pub use self::rtc_session::SessionStats;
+use crate::prelude::ParticipantIdentity;
+use crate::TranscriptionSegment;
+use crate::{
+    id::ParticipantSid,
+    options::TrackPublishOptions,
+    prelude::LocalTrack,
+    room::DisconnectReason,
+    rtc_engine::{
+        lk_runtime::LkRuntime,
+        rtc_session::{RtcSession, SessionEvent, SessionEvents},
+    },
+    DataPacketKind,
+};
 
 pub mod lk_runtime;
 mod peer_transport;
@@ -74,6 +79,7 @@ pub enum EngineError {
 pub struct EngineOptions {
     pub rtc_config: RtcConfiguration,
     pub signal_options: SignalOptions,
+    pub join_retries: u32,
 }
 
 #[derive(Debug)]
@@ -88,8 +94,20 @@ pub enum EngineEvent {
     },
     Data {
         participant_sid: Option<ParticipantSid>,
+        participant_identity: Option<ParticipantIdentity>,
         payload: Vec<u8>,
+        topic: Option<String>,
         kind: DataPacketKind,
+    },
+    Transcription {
+        participant_identity: ParticipantIdentity,
+        track_sid: String,
+        segments: Vec<TranscriptionSegment>,
+    },
+    SipDTMF {
+        participant_identity: Option<ParticipantIdentity>,
+        code: u32,
+        digit: Option<String>,
     },
     SpeakersChanged {
         speakers: Vec<proto::SpeakerInfo>,
@@ -135,8 +153,10 @@ struct EngineHandle {
 }
 
 struct EngineInner {
-    // Keep a strong reference to LkRuntime to avoid creating a new RtcRuntime or PeerConnection factory accross multiple Rtc sessions
-    _lk_runtime: Arc<LkRuntime>,
+    // Keep a strong reference to LkRuntime to avoid creating a new RtcRuntime or PeerConnection
+    // factory accross multiple Rtc sessions
+    #[allow(dead_code)]
+    lk_runtime: Arc<LkRuntime>,
     engine_tx: EngineEmitter,
     options: EngineOptions,
 
@@ -171,8 +191,8 @@ impl RtcEngine {
         Ok((Self { inner }, join_response, engine_events))
     }
 
-    pub async fn close(&self) {
-        self.inner.close(DisconnectReason::ClientInitiated).await
+    pub async fn close(&self, reason: DisconnectReason) {
+        self.inner.close(reason).await
     }
 
     pub async fn publish_data(
@@ -204,12 +224,20 @@ impl RtcEngine {
         session.add_track(req).await
     }
 
-    pub async fn remove_track(&self, sender: RtpSender) -> EngineResult<()> {
+    pub fn remove_track(&self, sender: RtpSender) -> EngineResult<()> {
         // We don't need to wait for the reconnection
         let session = self.inner.running_handle.read().session.clone();
-        session.remove_track(sender).await // TODO(theomonnom): Ignore errors where this
-                                           // RtpSender is bound to the old session. (Can
-                                           // happen on bad timing and it is safe to ignore)
+        session.remove_track(sender) // TODO(theomonnom): Ignore errors where this
+                                     // RtpSender is bound to the old session. (Can
+                                     // happen on bad timing and it is safe to ignore)
+    }
+
+    pub async fn mute_track(&self, req: proto::MuteTrackRequest) -> EngineResult<()> {
+        let (session, _r_lock) = {
+            let (handle, _r_lock) = self.inner.wait_reconnection().await?;
+            (handle.session.clone(), _r_lock)
+        };
+        session.mute_track(req).await
     }
 
     pub async fn create_sender(
@@ -229,7 +257,7 @@ impl RtcEngine {
 
     pub fn publisher_negotiation_needed(&self) {
         let inner = self.inner.clone();
-        tokio::spawn(async move {
+        livekit_runtime::spawn(async move {
             if let Ok((handle, _)) = inner.wait_reconnection().await {
                 handle.session.publisher_negotiation_needed()
             }
@@ -245,6 +273,11 @@ impl RtcEngine {
                                                 // on fail
     }
 
+    pub async fn get_stats(&self) -> EngineResult<SessionStats> {
+        let session = self.inner.running_handle.read().session.clone();
+        session.get_stats().await
+    }
+
     pub fn session(&self) -> Arc<RtcSession> {
         self.inner.running_handle.read().session.clone()
     }
@@ -257,41 +290,74 @@ impl EngineInner {
         options: EngineOptions,
     ) -> EngineResult<(Arc<Self>, proto::JoinResponse, EngineEvents)> {
         let lk_runtime = LkRuntime::instance();
+        let max_retries = options.join_retries;
 
-        let (session, join_response, session_events) =
-            RtcSession::connect(url, token, options.clone()).await?;
-        let (engine_tx, engine_rx) = mpsc::unbounded_channel();
+        let try_connect = {
+            move || {
+                let options = options.clone();
+                let lk_runtime = lk_runtime.clone();
+                async move {
+                    let (session, join_response, session_events) =
+                        RtcSession::connect(url, token, options.clone()).await?;
+                    session.wait_pc_connection().await?;
 
-        session.wait_pc_connection().await?;
+                    let (engine_tx, engine_rx) = mpsc::unbounded_channel();
+                    let inner = Arc::new(Self {
+                        lk_runtime,
+                        engine_tx,
+                        close_notifier: Arc::new(Notify::new()),
+                        running_handle: RwLock::new(EngineHandle {
+                            session: Arc::new(session),
+                            closed: false,
+                            reconnecting: false,
+                            full_reconnect: false,
+                            engine_task: None,
+                        }),
+                        options,
+                        reconnecting_lock: AsyncRwLock::default(),
+                        reconnecting_interval: AsyncMutex::new(interval(RECONNECT_INTERVAL)),
+                    });
 
-        let inner = Arc::new(Self {
-            _lk_runtime: lk_runtime,
-            engine_tx,
-            close_notifier: Arc::new(Notify::new()),
-            running_handle: RwLock::new(EngineHandle {
-                session: Arc::new(session),
-                closed: false,
-                reconnecting: false,
-                full_reconnect: false,
-                engine_task: None,
-            }),
-            options,
-            reconnecting_lock: AsyncRwLock::default(),
-            reconnecting_interval: AsyncMutex::new(interval(RECONNECT_INTERVAL)),
-        });
+                    // Start initial tasks
+                    let (close_tx, close_rx) = oneshot::channel();
+                    let session_task = livekit_runtime::spawn(Self::engine_task(
+                        inner.clone(),
+                        session_events,
+                        close_rx,
+                    ));
+                    inner.running_handle.write().engine_task = Some((session_task, close_tx));
 
-        // Start initial tasks
-        let (close_tx, close_rx) = oneshot::channel();
-        let session_task = tokio::spawn(Self::engine_task(inner.clone(), session_events, close_rx));
-        inner.running_handle.write().engine_task = Some((session_task, close_tx));
+                    Ok((inner, join_response, engine_rx))
+                }
+            }
+        };
 
-        Ok((inner, join_response, engine_rx))
+        let mut last_error = None;
+        for i in 0..(max_retries + 1) {
+            match try_connect().await {
+                Ok(res) => return Ok(res),
+                Err(e) => {
+                    let attempt_i = i + 1;
+                    if i < max_retries {
+                        log::warn!(
+                            "failed to connect: {:?}, retrying... ({}/{})",
+                            e,
+                            attempt_i,
+                            max_retries
+                        );
+                    }
+                    last_error = Some(e)
+                }
+            }
+        }
+
+        Err(last_error.unwrap())
     }
 
     async fn engine_task(
         self: Arc<Self>,
         mut session_events: SessionEvents,
-        mut close_receiver: oneshot::Receiver<()>,
+        mut close_rx: oneshot::Receiver<()>,
     ) {
         loop {
             tokio::select! {
@@ -299,7 +365,7 @@ impl EngineInner {
                     let debug = format!("{:?}", event);
                     let inner = self.clone();
                     let (tx, rx) = oneshot::channel();
-                    let task = tokio::spawn(async move {
+                    let task = livekit_runtime::spawn(async move {
                         if let Err(err) = inner.on_session_event(event).await {
                             log::error!("failed to handle session event: {:?}", err);
                         }
@@ -309,14 +375,14 @@ impl EngineInner {
                     // Monitor sync/async blockings
                     tokio::select! {
                         _ = rx => {},
-                        _ = tokio::time::sleep(Duration::from_secs(10)) => {
+                        _ = livekit_runtime::sleep(Duration::from_secs(10)) => {
                             log::error!("session_event is taking too much time: {}", debug);
                         }
                     }
 
-                    task.await.unwrap();
+                    task.await;
                 },
-                 _ = &mut close_receiver => {
+                 _ = &mut close_rx => {
                     break;
                 }
             }
@@ -327,20 +393,14 @@ impl EngineInner {
 
     async fn on_session_event(self: &Arc<Self>, event: SessionEvent) -> EngineResult<()> {
         match event {
-            SessionEvent::Close {
-                source,
-                reason,
-                can_reconnect,
-                retry_now,
-                full_reconnect,
-            } => {
-                log::info!("received session close: {}, {:?}", source, reason);
+            SessionEvent::Close { source, reason, can_reconnect, retry_now, full_reconnect } => {
+                log::debug!("received session close: {}, {:?}", source, reason);
                 if can_reconnect {
                     self.reconnection_needed(retry_now, full_reconnect);
                 } else {
                     // Spawning a new task because the close function wait for the engine_task to
                     // finish. (So it doesn't make sense to await it here)
-                    tokio::spawn({
+                    livekit_runtime::spawn({
                         let inner = self.clone();
                         async move {
                             inner.close(reason).await;
@@ -348,42 +408,37 @@ impl EngineInner {
                     });
                 }
             }
-            SessionEvent::Data {
-                participant_sid,
-                payload,
-                kind,
-            } => {
+            SessionEvent::Data { participant_sid, participant_identity, payload, topic, kind } => {
                 let _ = self.engine_tx.send(EngineEvent::Data {
                     participant_sid,
+                    participant_identity,
                     payload,
+                    topic,
                     kind,
                 });
             }
-            SessionEvent::MediaTrack {
-                track,
-                stream,
-                transceiver,
-            } => {
-                let _ = self.engine_tx.send(EngineEvent::MediaTrack {
-                    track,
-                    stream,
-                    transceiver,
+            SessionEvent::SipDTMF { participant_identity, code, digit } => {
+                let _ =
+                    self.engine_tx.send(EngineEvent::SipDTMF { participant_identity, code, digit });
+            }
+            SessionEvent::Transcription { participant_identity, track_sid, segments } => {
+                let _ = self.engine_tx.send(EngineEvent::Transcription {
+                    participant_identity,
+                    track_sid,
+                    segments,
                 });
             }
+            SessionEvent::MediaTrack { track, stream, transceiver } => {
+                let _ = self.engine_tx.send(EngineEvent::MediaTrack { track, stream, transceiver });
+            }
             SessionEvent::ParticipantUpdate { updates } => {
-                let _ = self
-                    .engine_tx
-                    .send(EngineEvent::ParticipantUpdate { updates });
+                let _ = self.engine_tx.send(EngineEvent::ParticipantUpdate { updates });
             }
             SessionEvent::SpeakersChanged { speakers } => {
-                let _ = self
-                    .engine_tx
-                    .send(EngineEvent::SpeakersChanged { speakers });
+                let _ = self.engine_tx.send(EngineEvent::SpeakersChanged { speakers });
             }
             SessionEvent::ConnectionQuality { updates } => {
-                let _ = self
-                    .engine_tx
-                    .send(EngineEvent::ConnectionQuality { updates });
+                let _ = self.engine_tx.send(EngineEvent::ConnectionQuality { updates });
             }
             SessionEvent::RoomUpdate { room } => {
                 let _ = self.engine_tx.send(EngineEvent::RoomUpdate { room });
@@ -408,8 +463,8 @@ impl EngineInner {
             session.close().await;
             let _ = close_tx.send(());
             let _ = engine_task.await;
+            let _ = self.engine_tx.send(EngineEvent::Disconnected { reason });
         }
-        let _ = self.engine_tx.send(EngineEvent::Disconnected { reason });
     }
 
     /// When waiting for reconnection, it ensures we're always using the latest session.
@@ -441,7 +496,7 @@ impl EngineInner {
 
             if retry_now {
                 let inner = self.clone();
-                tokio::spawn(async move {
+                livekit_runtime::spawn(async move {
                     inner.reconnecting_interval.lock().await.reset();
                 });
             }
@@ -452,7 +507,7 @@ impl EngineInner {
         running_handle.reconnecting = true;
         running_handle.full_reconnect = full_reconnect;
 
-        tokio::spawn({
+        livekit_runtime::spawn({
             let inner = self.clone();
             async move {
                 // Hold the reconnection lock for the whole reconnection time
@@ -465,12 +520,12 @@ impl EngineInner {
 
                 tokio::select! {
                     _ = &mut close_receiver => {
-                        log::info!("reconnection cancelled");
+                        log::debug!("reconnection cancelled");
                         return;
                     }
                     res = inner.reconnect_task() => {
                         if res.is_err() {
-                            log::error!("failed to reconnect");
+                            log::error!("failed to reconnect to the livekit room");
                             inner.close(DisconnectReason::UnknownReason).await;
                         } else {
                             log::info!("RtcEngine successfully recovered")
@@ -490,7 +545,8 @@ impl EngineInner {
     /// We first try to resume the connection, if it fails, we start a full reconnect.
     /// NOTE: The reconnect_task must be canncellation safe
     async fn reconnect_task(self: &Arc<Self>) -> EngineResult<()> {
-        // Get the latest connection info from the signal_client (including the refreshed token because the initial join token may have expired)
+        // Get the latest connection info from the signal_client (including the refreshed token
+        // because the initial join token may have expired)
         let (url, token) = {
             let running_handle = self.running_handle.read();
             let signal_client = running_handle.session.signal_client();
@@ -507,9 +563,7 @@ impl EngineInner {
             };
 
             if is_closed {
-                return Err(EngineError::Connection(
-                    "attempt canncelled, engine is closed".into(),
-                ));
+                return Err(EngineError::Connection("attempt canncelled, engine is closed".into()));
             }
 
             if full_reconnect {
@@ -520,9 +574,8 @@ impl EngineInner {
                 }
 
                 log::error!("restarting connection... attempt: {}", i);
-                if let Err(err) = self
-                    .try_restart_connection(&url, &token, self.options.clone())
-                    .await
+                if let Err(err) =
+                    self.try_restart_connection(&url, &token, self.options.clone()).await
                 {
                     log::error!("restarting connection failed: {}", err);
                 } else {
@@ -562,7 +615,8 @@ impl EngineInner {
     }
 
     /// Try to recover the connection by doing a full reconnect.
-    /// It recreates a new RtcSession (new peer connection, new signal client, new data channels, etc...)
+    /// It recreates a new RtcSession (new peer connection, new signal client, new data channels,
+    /// etc...)
     async fn try_restart_connection(
         self: &Arc<Self>,
         url: &str,
@@ -589,9 +643,7 @@ impl EngineInner {
         // On SignalRestarted, the room will try to unpublish the local tracks
         // NOTE: Doing operations that use rtc_session will not use the new one
         let (tx, rx) = oneshot::channel();
-        let _ = self
-            .engine_tx
-            .send(EngineEvent::SignalRestarted { join_response, tx });
+        let _ = self.engine_tx.send(EngineEvent::SignalRestarted { join_response, tx });
         let _ = rx.await;
 
         new_session.wait_pc_connection().await?;
@@ -605,7 +657,7 @@ impl EngineInner {
         handle.session = Arc::new(new_session);
 
         let (close_tx, close_rx) = oneshot::channel();
-        let task = tokio::spawn(self.clone().engine_task(session_events, close_rx));
+        let task = livekit_runtime::spawn(self.clone().engine_task(session_events, close_rx));
         handle.engine_task = Some((task, close_tx));
 
         Ok(())
@@ -617,10 +669,7 @@ impl EngineInner {
         let reconnect_response = session.restart().await?;
 
         let (tx, rx) = oneshot::channel();
-        let _ = self.engine_tx.send(EngineEvent::SignalResumed {
-            reconnect_response,
-            tx,
-        });
+        let _ = self.engine_tx.send(EngineEvent::SignalResumed { reconnect_response, tx });
 
         // With SignalResumed, the room will send a SyncState message to the server
         let _ = rx.await;

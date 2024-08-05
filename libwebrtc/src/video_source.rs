@@ -1,4 +1,4 @@
-// Copyright 2023 LiveKit, Inc.
+// Copyright 2024 LiveKit, Inc.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -40,9 +40,10 @@ impl RtcVideoSource {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native {
-    use super::*;
-    use crate::video_frame::{VideoFrame, VideoFrameBuffer};
     use std::fmt::{Debug, Formatter};
+
+    use super::*;
+    use crate::video_frame::{VideoBuffer, VideoFrame};
 
     #[derive(Clone)]
     pub struct NativeVideoSource {
@@ -63,12 +64,10 @@ pub mod native {
 
     impl NativeVideoSource {
         pub fn new(resolution: VideoResolution) -> Self {
-            Self {
-                handle: vs_imp::NativeVideoSource::new(resolution),
-            }
+            Self { handle: vs_imp::NativeVideoSource::new(resolution) }
         }
 
-        pub fn capture_frame<T: AsRef<dyn VideoFrameBuffer>>(&self, frame: &VideoFrame<T>) {
+        pub fn capture_frame<T: AsRef<dyn VideoBuffer>>(&self, frame: &VideoFrame<T>) {
             self.handle.capture_frame(frame)
         }
 

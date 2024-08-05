@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::any::Any;
+
 use crate::impl_thread_safety;
 
 #[cxx::bridge(namespace = "livekit")]
@@ -35,6 +37,11 @@ pub mod ffi {
 
         fn set_track(self: &RtpSender, track: SharedPtr<MediaStreamTrack>) -> bool;
         fn track(self: &RtpSender) -> SharedPtr<MediaStreamTrack>;
+        fn get_stats(
+            self: &RtpSender,
+            ctx: Box<SenderContext>,
+            on_stats: fn(ctx: Box<SenderContext>, json: String),
+        );
         fn ssrc(self: &RtpSender) -> u32;
         fn media_type(self: &RtpSender) -> MediaType;
         fn id(self: &RtpSender) -> String;
@@ -46,6 +53,13 @@ pub mod ffi {
 
         fn _shared_rtp_sender() -> SharedPtr<RtpSender>;
     }
+
+    extern "Rust" {
+        type SenderContext;
+    }
 }
+
+#[repr(transparent)]
+pub struct SenderContext(pub Box<dyn Any + Send>);
 
 impl_thread_safety!(ffi::RtpSender, Send + Sync);

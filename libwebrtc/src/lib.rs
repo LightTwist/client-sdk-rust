@@ -56,6 +56,7 @@ pub mod rtp_receiver;
 pub mod rtp_sender;
 pub mod rtp_transceiver;
 pub mod session_description;
+pub mod stats;
 pub mod video_frame;
 pub mod video_source;
 pub mod video_stream;
@@ -69,10 +70,9 @@ pub mod sender_report;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod native {
-    pub use crate::imp::audio_resampler;
-    pub use crate::imp::frame_cryptor;
-    pub use crate::imp::yuv_helper;
     pub use webrtc_sys::webrtc::ffi::create_random_uuid;
+
+    pub use crate::imp::{audio_resampler, frame_cryptor, yuv_helper};
 }
 
 #[cfg(target_os = "android")]

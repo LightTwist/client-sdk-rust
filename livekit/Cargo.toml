@@ -1,14 +1,19 @@
 [package]
 name = "livekit"
-version = "0.2.0"
+version = "0.4.1"
 edition = "2021"
 license = "Apache-2.0"
 description = "Rust Client SDK for LiveKit"
-repository = "https://github.com/livekit/client-sdk-rust"
+repository = "https://github.com/livekit/rust-sdks"
 
 [features]
 # By default ws TLS is not enabled
-default = ['rustls-tls-native-roots']
+default = ['rustls-tls-native-roots', 'tokio']
+
+async = ["livekit-api/signal-client-async"]
+tokio = ["livekit-api/signal-client-tokio"]
+dispatcher = ["livekit-api/signal-client-dispatcher"]
+
 
 # Note that the following features only change the behavior of tokio-tungstenite.
 # It doesn't change the behavior of libwebrtc/webrtc-sys
@@ -22,13 +27,14 @@ __rustls-tls = ["livekit-api/__rustls-tls"]
 __lk-internal = []
 
 [dependencies]
-livekit-api = { path = "../livekit-api", version = "0.2.0", default-features = false, features = ["signal-client"] }
-libwebrtc = { path = "../libwebrtc", version = "0.2.0" }
-livekit-protocol = { path = "../livekit-protocol", version = "0.2.0" }
+livekit-runtime = { path = "../livekit-runtime", version = "0.3.0", default-features = false }
+livekit-api = { path = "../livekit-api", version = "0.3.4", default-features = false }
+libwebrtc = { path = "../libwebrtc", version = "0.3.4" }
+livekit-protocol = { path = "../livekit-protocol", version = "0.3.4" }
 prost = "0.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1.0"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1", default-features = false, features = ["sync", "macros"] }
 parking_lot = { version = "0.12" }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 thiserror = "1.0"

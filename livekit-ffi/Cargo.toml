@@ -1,10 +1,10 @@
 [package]
 name = "livekit-ffi"
-version = "0.3.11"
+version = "0.7.2"
 edition = "2021"
 license = "Apache-2.0"
-description = "LiveKit interface to easily use the Rust SDK on other languages"
-repository = "https://github.com/livekit/client-sdk-rust"
+description = "FFI interface for bindings in other languages"
+repository = "https://github.com/livekit/rust-sdks"
 
 [features]
 default = ["rustls-tls-native-roots"]
@@ -18,8 +18,8 @@ __rustls-tls = ["livekit/__rustls-tls"]
 tracing = ["tokio/tracing", "console-subscriber"]
 
 [dependencies]
-livekit = { path = "../livekit", version = "0.2.0" }
-livekit-protocol = { path = "../livekit-protocol", version = "0.2.0" }
+livekit = { path = "../livekit", version = "0.4.1" }
+livekit-protocol = { path = "../livekit-protocol", version = "0.3.4" }
 tokio = { version = "1", features = ["full", "parking_lot"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 parking_lot = { version = "0.12", features = ["deadlock_detection"] }
@@ -32,12 +32,16 @@ dashmap = "5.4"
 env_logger = "0.10"
 downcast-rs = "1.2"
 console-subscriber = { version = "0.1", features = ["parking_lot"], optional = true }
+imgproc = "0.3.11"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21.1"
 
 [build-dependencies]
-webrtc-sys-build = { path = "../webrtc-sys/build", version = "0.2.0" }
+webrtc-sys-build = { path = "../webrtc-sys/build", version = "0.3.2" }
 
 [dev-dependencies]
-livekit-api = { path = "../livekit-api", version = "0.2.0" }
+livekit-api = { path = "../livekit-api", version = "0.3.2" }
 
 [lib]
-crate-type = ["cdylib"]
+crate-type = ["lib", "cdylib"]

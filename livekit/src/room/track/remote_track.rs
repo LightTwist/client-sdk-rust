@@ -12,13 +12,14 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-use super::track_dispatch;
-use super::TrackInner;
-use crate::prelude::*;
-use libwebrtc::prelude::*;
+use std::sync::Arc;
+
+use libwebrtc::{prelude::*, stats::RtcStats};
 use livekit_protocol as proto;
 use livekit_protocol::enum_dispatch;
-use std::sync::Arc;
+
+use super::{track_dispatch, TrackInner};
+use crate::prelude::*;
 
 #[derive(Clone, Debug)]
 pub enum RemoteTrack {
@@ -36,6 +37,22 @@ impl RemoteTrack {
             Self::Video(track) => track.rtc_track().into(),
         }
     }
+
+    pub async fn get_stats(&self) -> RoomResult<Vec<RtcStats>> {
+        match self {
+            Self::Audio(track) => track.get_stats().await,
+            Self::Video(track) => track.get_stats().await,
+        }
+    }
+}
+
+pub(super) async fn get_stats(inner: &Arc<TrackInner>) -> RoomResult<Vec<RtcStats>> {
+    let transceiver = inner.info.read().transceiver.clone();
+    let Some(transceiver) = transceiver.as_ref() else {
+        return Err(RoomError::Internal("no transceiver found for track".into()));
+    };
+
+    Ok(transceiver.receiver().get_stats().await?)
 }
 
 pub(super) fn update_info(inner: &Arc<TrackInner>, track: &Track, new_info: proto::TrackInfo) {

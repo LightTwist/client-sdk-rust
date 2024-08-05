@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use std::any::Any;
+
 use crate::impl_thread_safety;
 
 #[cxx::bridge(namespace = "livekit")]
@@ -41,6 +43,11 @@ pub mod ffi {
         // type AdaptedNativeFrameTransformer;
 
         fn track(self: &RtpReceiver) -> SharedPtr<MediaStreamTrack>;
+        fn get_stats(
+            self: &RtpReceiver,
+            ctx: Box<ReceiverContext>,
+            on_stats: fn(ctx: Box<ReceiverContext>, json: String),
+        );
         fn stream_ids(self: &RtpReceiver) -> Vec<String>;
         fn streams(self: &RtpReceiver) -> Vec<MediaStreamPtr>;
         fn media_type(self: &RtpReceiver) -> MediaType;
@@ -54,6 +61,12 @@ pub mod ffi {
 
         fn _shared_rtp_receiver() -> SharedPtr<RtpReceiver>;
     }
+
+    extern "Rust" {
+        type ReceiverContext;
+    }
 }
+
+pub struct ReceiverContext(pub Box<dyn Any + Send>);
 
 impl_thread_safety!(ffi::RtpReceiver, Send + Sync);

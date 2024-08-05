@@ -111,10 +111,10 @@ std::unique_ptr<SessionDescription> create_session_description(
 }
 
 NativeCreateSdpObserver::NativeCreateSdpObserver(
-    rust::Box<AsyncContext> ctx,
-    rust::Fn<void(rust::Box<AsyncContext>, std::unique_ptr<SessionDescription>)>
+    rust::Box<PeerContext> ctx,
+    rust::Fn<void(rust::Box<PeerContext>, std::unique_ptr<SessionDescription>)>
         on_success,
-    rust::Fn<void(rust::Box<AsyncContext>, RtcError)> on_error)
+    rust::Fn<void(rust::Box<PeerContext>, RtcError)> on_error)
     : ctx_(std::move(ctx)), on_success_(on_success), on_error_(on_error) {}
 
 void NativeCreateSdpObserver::OnSuccess(
@@ -130,8 +130,8 @@ void NativeCreateSdpObserver::OnFailure(webrtc::RTCError error) {
 }
 
 NativeSetLocalSdpObserver::NativeSetLocalSdpObserver(
-    rust::Box<AsyncContext> ctx,
-    rust::Fn<void(rust::Box<AsyncContext>, RtcError)> on_complete)
+    rust::Box<PeerContext> ctx,
+    rust::Fn<void(rust::Box<PeerContext>, RtcError)> on_complete)
     : ctx_(std::move(ctx)), on_complete_(on_complete) {}
 
 void NativeSetLocalSdpObserver::OnSetLocalDescriptionComplete(
@@ -140,13 +140,12 @@ void NativeSetLocalSdpObserver::OnSetLocalDescriptionComplete(
 }
 
 NativeSetRemoteSdpObserver::NativeSetRemoteSdpObserver(
-    rust::Box<AsyncContext> ctx,
-    rust::Fn<void(rust::Box<AsyncContext>, RtcError)> on_complete)
+    rust::Box<PeerContext> ctx,
+    rust::Fn<void(rust::Box<PeerContext>, RtcError)> on_complete)
     : ctx_(std::move(ctx)), on_complete_(on_complete) {}
 
 void NativeSetRemoteSdpObserver::OnSetRemoteDescriptionComplete(
     webrtc::RTCError error) {
   on_complete_(std::move(ctx_), to_error(error));
 }
-
 }  // namespace livekit
