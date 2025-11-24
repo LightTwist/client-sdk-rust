@@ -9,7 +9,6 @@ NativeFrameTransformer::NativeFrameTransformer(
 }
 
 void NativeFrameTransformer::Transform(std::unique_ptr<webrtc::TransformableFrameInterface> transformable_frame) {
-    // fprintf(stderr, "NativeFrameTransformer::Transform\n");
     if (is_video) {
         std::unique_ptr<webrtc::TransformableVideoFrameInterface> frame(static_cast<webrtc::TransformableVideoFrameInterface*>(transformable_frame.release()));
         observer_->on_encoded_video_frame(std::make_unique<EncodedVideoFrame>(std::move(frame)));
@@ -21,13 +20,11 @@ void NativeFrameTransformer::Transform(std::unique_ptr<webrtc::TransformableFram
 }
 
 void NativeFrameTransformer::RegisterTransformedFrameCallback(rtc::scoped_refptr<webrtc::TransformedFrameCallback> send_frame_to_sink_callback) {
-    fprintf(stderr, "NativeFrameTransformer::RegisterTransformedFrameCallback\n");
     webrtc::MutexLock lock(&sink_mutex_);
     sink_callback_ = send_frame_to_sink_callback;
 }
 
 void NativeFrameTransformer::UnregisterTransformedFrameCallback() {
-    fprintf(stderr, "NativeFrameTransformer::UnregisterTransformedFrameCallback\n");
     webrtc::MutexLock lock(&sink_mutex_);
     sink_callback_ = nullptr;
 }
@@ -35,7 +32,6 @@ void NativeFrameTransformer::UnregisterTransformedFrameCallback() {
 void NativeFrameTransformer::RegisterTransformedFrameSinkCallback(
       rtc::scoped_refptr<webrtc::TransformedFrameCallback> send_frame_to_sink_callback,
       uint32_t ssrc) {
-    fprintf(stderr, "NativeFrameTransformer::RegisterTransformedFrameSinkCallback for ssrc %" PRIu32 "\n", ssrc);
 
     if (send_frame_to_sink_callback == nullptr) {
         fprintf(stderr, "callback is nullptr\n");
@@ -49,7 +45,6 @@ void NativeFrameTransformer::RegisterTransformedFrameSinkCallback(
 }
 
 void NativeFrameTransformer::UnregisterTransformedFrameSinkCallback(uint32_t ssrc) {
-    fprintf(stderr, "NativeFrameTransformer::UnregisterTransformedFrameSinkCallback for ssrc %" PRIu32 "\n", ssrc);
 
     webrtc::MutexLock lock(&sink_mutex_);
     auto it = sink_callbacks_.find(ssrc);
@@ -59,19 +54,14 @@ void NativeFrameTransformer::UnregisterTransformedFrameSinkCallback(uint32_t ssr
 }
 
 void NativeFrameTransformer::FrameTransformed(std::unique_ptr<webrtc::TransformableFrameInterface> frame) {
-    //fprintf(stderr, "NativeFrameTransformer::FrameTransformed\n");
-
     rtc::scoped_refptr<webrtc::TransformedFrameCallback> sink_callback = nullptr;
     {
         webrtc::MutexLock lock(&sink_mutex_);
 
         uint32_t ssrc = frame->GetSsrc();
 
-        //fprintf(stderr, "getting sink callback for ssrc %" PRIu32 "\n", ssrc);
-
         auto it = sink_callbacks_.find(ssrc);
         if (it != sink_callbacks_.end()) {
-            //fprintf(stderr, "found! callback for ssrc %" PRIu32 "\n", ssrc);
             sink_callback = sink_callbacks_[ssrc];
         }
         else {
@@ -124,7 +114,7 @@ NativeSenderReportCallback::NativeSenderReportCallback(
 }
 
 void NativeSenderReportCallback::OnSenderReport(std::unique_ptr<webrtc::LTSenderReport> sender_report) {
-    fprintf(stderr, "NativeSenderReportCallback::OnSenderReport\n");
+    // fprintf(stderr, "NativeSenderReportCallback::OnSenderReport\n");
     observer_->on_sender_report(std::make_unique<SenderReport>(std::move(sender_report)));
 }
 

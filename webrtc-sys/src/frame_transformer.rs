@@ -106,7 +106,7 @@ impl SenderReportSinkWrapper {
     }
 
     fn on_sender_report(&self, sender_report: UniquePtr<SenderReport>) {
-        println!("SenderReportSinkWrapper::on_sender_report");
+        // println!("SenderReportSinkWrapper::on_sender_report");
         unsafe {
             (*self.observer).on_sender_report(sender_report);
         }

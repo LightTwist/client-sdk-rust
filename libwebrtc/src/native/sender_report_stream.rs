@@ -59,7 +59,7 @@ struct SenderReportsObserver {
 impl sys_ft::SenderReportSink for SenderReportsObserver {
     // To be called when Transform happens
     fn on_sender_report(&self, sender_report: UniquePtr<sys_sr>) {
-        println!("SenderReportsObserver::on_sender_report");
+        // println!("SenderReportsObserver::on_sender_report");
         let sender_report = SenderReport::new(sender_report);
         let _ = self.sr_tx.send(sender_report);
     }
