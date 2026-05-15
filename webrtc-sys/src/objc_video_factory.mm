@@ -24,12 +24,30 @@
 namespace livekit {
 
 std::unique_ptr<webrtc::VideoEncoderFactory> CreateObjCVideoEncoderFactory() {
-  // TODO(theomonnom): Simulcast?
-  return webrtc::ObjCToNativeVideoEncoderFactory([[RTCVideoEncoderFactoryH264 alloc] init]);
+  @try {
+    // TODO(theomonnom): Simulcast?
+    auto factory = webrtc::ObjCToNativeVideoEncoderFactory([[RTCVideoEncoderFactoryH264 alloc] init]);
+    if (factory) {
+      (void)factory->GetSupportedFormats();
+    }
+    return factory;
+  } @catch (NSException *exception) {
+    NSLog(@"WARNING: ObjC video encoder factory failed: %@ - %@", exception.name, exception.reason);
+    return nullptr;
+  }
 }
 
 std::unique_ptr<webrtc::VideoDecoderFactory> CreateObjCVideoDecoderFactory() {
-  return webrtc::ObjCToNativeVideoDecoderFactory([[RTCVideoDecoderFactoryH264 alloc] init]);
+  @try {
+    auto factory = webrtc::ObjCToNativeVideoDecoderFactory([[RTCVideoDecoderFactoryH264 alloc] init]);
+    if (factory) {
+      (void)factory->GetSupportedFormats();
+    }
+    return factory;
+  } @catch (NSException *exception) {
+    NSLog(@"WARNING: ObjC video decoder factory failed: %@ - %@", exception.name, exception.reason);
+    return nullptr;
+  }
 }
 
 }  // namespace livekit
