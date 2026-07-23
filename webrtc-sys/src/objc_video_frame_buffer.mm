@@ -35,12 +35,18 @@ std::unique_ptr<VideoFrameBuffer> new_native_buffer_from_platform_image_buffer(
 CVPixelBufferRef native_buffer_to_platform_image_buffer(
     const std::unique_ptr<VideoFrameBuffer> &buffer
 ) {
-    id<RTC_OBJC_TYPE(RTCVideoFrameBuffer)> rtc_pixel_buffer = webrtc::NativeToObjCVideoFrameBuffer(buffer->get());
+    // Rust worker threads do not install an Objective-C autorelease pool.
+    // Bound the wrapper created by NativeToObjCVideoFrameBuffer to this call
+    // instead of retaining one autoreleased object per decoded frame.
+    @autoreleasepool {
+        id<RTC_OBJC_TYPE(RTCVideoFrameBuffer)> rtc_pixel_buffer =
+            webrtc::NativeToObjCVideoFrameBuffer(buffer->get());
 
-    if ([rtc_pixel_buffer isKindOfClass:[RTCCVPixelBuffer class]]) {
-        RTCCVPixelBuffer *cv_pixel_buffer = (RTCCVPixelBuffer *)rtc_pixel_buffer;
-        return [cv_pixel_buffer pixelBuffer];
-    } else {
+        if ([rtc_pixel_buffer isKindOfClass:[RTCCVPixelBuffer class]]) {
+            RTCCVPixelBuffer *cv_pixel_buffer =
+                (RTCCVPixelBuffer *)rtc_pixel_buffer;
+            return [cv_pixel_buffer pixelBuffer];
+        }
         return nullptr;
     }
 }
