@@ -36,8 +36,11 @@
 namespace livekit {
 
 VideoDecoderFactory::VideoDecoderFactory() {
-#ifdef __APPLE__
-  factories_.push_back(livekit::CreateObjCVideoDecoderFactory());
+#if defined(__APPLE__) && !defined(LK_DISABLE_OBJC_VIDEO)
+  auto objc_factory = livekit::CreateObjCVideoDecoderFactory();
+  if (objc_factory) {
+    factories_.push_back(std::move(objc_factory));
+  }
 #endif
 
 #ifdef WEBRTC_ANDROID
@@ -95,9 +98,10 @@ VideoDecoderFactory::CodecSupport VideoDecoderFactory::QueryCodecSupport(
 std::unique_ptr<webrtc::VideoDecoder> VideoDecoderFactory::CreateVideoDecoder(
     const webrtc::SdpVideoFormat& format) {
   for (const auto& factory : factories_) {
-    for (const auto& supported_format : factory->GetSupportedFormats()) {
-      if (supported_format.IsSameCodec(format))
-        return factory->CreateVideoDecoder(format);
+    auto supported_format = webrtc::FuzzyMatchSdpVideoFormat(
+        factory->GetSupportedFormats(), format);
+    if (supported_format) {
+      return factory->CreateVideoDecoder(*supported_format);
     }
   }
 
@@ -105,8 +109,11 @@ std::unique_ptr<webrtc::VideoDecoder> VideoDecoderFactory::CreateVideoDecoder(
     return webrtc::VP8Decoder::Create();
   if (absl::EqualsIgnoreCase(format.name, cricket::kVp9CodecName))
     return webrtc::VP9Decoder::Create();
-  if (absl::EqualsIgnoreCase(format.name, cricket::kH264CodecName))
+  if (absl::EqualsIgnoreCase(format.name, cricket::kH264CodecName)) {
+    RTC_LOG(LS_WARNING)
+        << "Falling back to the built-in H264 decoder because no Apple format matched";
     return webrtc::H264Decoder::Create();
+  }
 
 
 #if defined(RTC_DAV1D_IN_INTERNAL_DECODER_FACTORY)
